@@ -114,6 +114,17 @@ button.danger { color: var(--danger); }
 .draw-bar div { display: flex; gap: 6px; }
 .draw-bar button { min-height: 38px; padding: 4px 10px; }
 .edit-panel { padding: 8px 2px 0; display: grid; gap: 8px; }
+.walk-card { display: grid; gap: 10px; }
+body.walking #map-wrap { height: 40vh; min-height: 220px; }
+body.walking .stats, body.walking .controls { display: none; }
+.walk-card h2 { margin: 0; }
+.walk-steps { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: 14px; }
+.walk-status { display: flex; justify-content: space-between; font-size: 15px; font-weight: 600; }
+#walk-live, #walk-intro { display: grid; gap: 10px; }
+.turns { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+.turns button { min-height: 64px; font-size: 15px; font-weight: 600; }
+button.wide { width: 100%; }
+.walk-card .row { margin-top: 0; }
 .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
 .seg button { font-size: 13px; padding: 6px 4px; }
 .selection { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }

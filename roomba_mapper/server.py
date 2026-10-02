@@ -5,6 +5,8 @@ import json
 import mimetypes
 import os
 import socket
+import ssl
+import subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -147,8 +149,37 @@ def make_handler(controller, pin=None):
     return Handler
 
 
-def make_server(controller, host="0.0.0.0", port=8080, pin=None):
-    return ThreadingHTTPServer((host, port), make_handler(controller, pin))
+def make_server(controller, host="0.0.0.0", port=8080, pin=None, ssl_context=None):
+    server = ThreadingHTTPServer((host, port), make_handler(controller, pin))
+    if ssl_context is not None:
+        server.socket = ssl_context.wrap_socket(server.socket, server_side=True)
+    return server
+
+
+def https_context(cert_path, key_path, days=3650):
+    """TLS context for serving the app over https.
+
+    Phones only let a web page read their motion sensors (used by
+    walk-to-map) over https. A self-signed certificate is made once with
+    the `openssl` tool (built into macOS and Linux) and reused; the phone
+    shows a one-time warning that has to be accepted.
+    """
+    if not (os.path.exists(cert_path) and os.path.exists(key_path)):
+        try:
+            subprocess.run(
+                ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", str(days),
+                 "-subj", "/CN=roomba-mapper", "-keyout", key_path, "-out", cert_path],
+                check=True, capture_output=True)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise RuntimeError("could not create a certificate - https needs the `openssl` "
+                               f"command ({exc})") from exc
+        try:
+            os.chmod(key_path, 0o600)
+        except OSError:
+            pass
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(cert_path, key_path)
+    return ctx
 
 
 def lan_address():

@@ -6,3 +6,5 @@ roomba_config.json
 .roomba-map-*.tmp
 roomba_probe.jsonl
 roomba_cloud/
+roomba_cert.pem
+roomba_key.pem

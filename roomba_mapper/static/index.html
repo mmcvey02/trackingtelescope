@@ -54,6 +54,7 @@
         <div class="map-tools">
           <button id="btn-fit" title="Fit map" aria-label="Fit map">⤢</button>
           <button id="btn-rotate" title="Rotate view 90°" aria-label="Rotate view">⟳</button>
+          <button id="btn-walk" class="toggle" aria-pressed="false">🚶 Walk</button>
           <button id="btn-edit" class="toggle" aria-pressed="false">✎ Edit map</button>
         </div>
       </div>
@@ -100,6 +101,49 @@
         <span><i class="sw nogo"></i>No-go</span>
         <span><i class="sw trail"></i>Path</span>
       </div>
+    </section>
+
+    <section class="card walk-card" id="walk-card" hidden>
+      <h2>🚶 Walk to map</h2>
+      <div id="walk-intro">
+        <ol class="walk-steps">
+          <li>Stand right in front of the dock, back to the wall it sits against, facing into the room.</li>
+          <li>Tap <b>Start at the dock</b>. Then turn left or right and walk along the walls in straight lines,
+            about 30 cm from them, holding the phone.</li>
+          <li>At each corner tap the way you turned. When you are back at the dock, tap <b>Finish room</b>.</li>
+        </ol>
+        <div class="row">
+          <label>Distance from walls (cm)<input type="number" id="walk-gap" value="30" min="0" max="100" inputmode="numeric"></label>
+          <label>Your step length (cm)<input type="number" id="walk-step" value="70" min="30" max="120" inputmode="numeric"></label>
+        </div>
+        <button id="walk-start" class="primary wide">Start at the dock</button>
+      </div>
+      <div id="walk-live" hidden>
+        <div class="walk-status">
+          <span id="walk-what">Tracing a room</span>
+          <span><b id="walk-steps">0</b> steps</span>
+        </div>
+        <label>This wall so far (m) – type a measured length to correct it
+          <input type="number" id="walk-dist" step="0.05" min="0" inputmode="decimal"></label>
+        <div class="turns">
+          <button data-turn="left">↰ Turned left</button>
+          <button data-turn="right">↱ Turned right</button>
+          <button data-turn="around">↺ Turned back</button>
+        </div>
+        <div class="row" id="walk-drawing-btns">
+          <button id="walk-finish" class="primary">✓ Finish room</button>
+          <button id="walk-cancel-shape">Discard this shape</button>
+        </div>
+        <div class="row" id="walk-moving-btns" hidden>
+          <button id="walk-new-room" class="primary">Trace a room from here</button>
+          <button id="walk-new-obstacle">Trace furniture from here</button>
+        </div>
+        <div class="row">
+          <button id="walk-undo">Undo last corner</button>
+          <button id="walk-stop" class="danger">Stop walking</button>
+        </div>
+      </div>
+      <p class="hint" id="walk-note"></p>
     </section>
 
     <section class="card" id="missed-card" hidden>
@@ -150,6 +194,7 @@
     </form>
   </dialog>
 
+  <script src="walk.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

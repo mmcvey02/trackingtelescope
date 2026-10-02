@@ -15,8 +15,6 @@ import json
 import math
 import os
 import socket
-import ssl
-import subprocess
 import tempfile
 import threading
 import time
@@ -28,16 +26,9 @@ from .wifi import PASSWORD_REQUEST, deep_merge
 
 def self_signed_context(workdir=None):
     """Server TLS context with a throwaway self-signed certificate (needs openssl)."""
+    from .server import https_context
     workdir = workdir or tempfile.mkdtemp(prefix="roomba-emu-")
-    key, cert = os.path.join(workdir, "key.pem"), os.path.join(workdir, "cert.pem")
-    if not os.path.exists(cert):
-        subprocess.run(
-            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "30",
-             "-subj", "/CN=roomba-emulator", "-keyout", key, "-out", cert],
-            check=True, capture_output=True)
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ctx.load_cert_chain(cert, key)
-    return ctx
+    return https_context(os.path.join(workdir, "cert.pem"), os.path.join(workdir, "key.pem"), days=30)
 
 
 class RoombaEmulator:

@@ -49,6 +49,8 @@ def build_parser():
     s.add_argument("--host", default="0.0.0.0", help="address the app listens on")
     s.add_argument("--port", type=int, default=8080)
     s.add_argument("--pin", help="require this PIN in the app (recommended on shared Wi-Fi)")
+    s.add_argument("--https", action="store_true",
+                   help="serve over https so the phone can use its motion sensors (walk-to-map)")
     s.add_argument("--ip", help="robot IP address")
     s.add_argument("--blid", help="robot id (BLID)")
     s.add_argument("--password", help="robot local password")
@@ -149,10 +151,22 @@ def cmd_serve(args):
     store = MapStore(args.map)
     controller = MapController(store, link)
     controller.start()
-    server = make_server(controller, args.host, args.port, args.pin)
+    ssl_context = None
+    if args.https:
+        from .server import https_context
+        try:
+            ssl_context = https_context("roomba_cert.pem", "roomba_key.pem")
+        except RuntimeError as exc:
+            controller.shutdown()
+            sys.exit(f"{exc}\nRun without --https and type wall lengths by hand instead.")
+    server = make_server(controller, args.host, args.port, args.pin, ssl_context)
     shown = lan_address() if args.host in ("0.0.0.0", "") else args.host
     print(f"Roomba mapper: {link.name}. Map file: {store.path}")
-    print(f"Open on your phone (same Wi-Fi): http://{shown}:{args.port}/")
+    scheme = "https" if ssl_context else "http"
+    print(f"Open on your phone (same Wi-Fi): {scheme}://{shown}:{args.port}/")
+    if ssl_context:
+        print("The phone will warn that the connection is not private (the certificate is made "
+              "by this program, not a public authority). Choose Show Details > visit this website.")
     if args.pin:
         print("PIN protection is on.")
     print("Press Ctrl+C to stop.")

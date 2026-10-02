@@ -214,7 +214,9 @@ class GeoMap:
         Codes: 0 nothing, 1 floor that needs cleaning, 2 floor cleaned,
         3 cleaned/driven outside the floor plan.
         """
-        mask = self.floor_mask()
+        # Robots that can't report their position never record coverage; then
+        # the plan is shown plain rather than all "needs cleaning".
+        mask = self.floor_mask() if self.coverage else set()
         fresh = {c for c in self.coverage if self._fresh(c, now, stale_after)}
         cells = mask | fresh
         if not cells:
@@ -239,6 +241,8 @@ class GeoMap:
                 "data": "".join(rows)}
 
     def missed_spots(self, now, stale_after, min_area=0.15, limit=12):
+        if not self.coverage:
+            return []  # nothing has ever been tracked, so nothing can be called missed
         need = {c for c in self.floor_mask() if not self._fresh(c, now, stale_after)}
         spots = []
         for comp in geo.components(need, eight=False):
@@ -260,7 +264,7 @@ class GeoMap:
             "floor_m2": round(total * a, 1),
             "cleaned_m2": round(clean * a, 1),
             "remaining_m2": round((total - clean) * a, 1),
-            "percent": round(100.0 * clean / total, 1) if total else None,
+            "percent": round(100.0 * clean / total, 1) if total and self.coverage else None,
             "explored_m2": round(len(self.explored) * EXPLORE_RES ** 2, 1),
             "obstacles": sum(1 for el in self.elements if el["kind"] == "obstacle"),
         }

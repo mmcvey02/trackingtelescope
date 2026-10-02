@@ -45,6 +45,45 @@ Everything is saved in `roomba_map.json` next to where you run the
 program. **⬇ Export map** downloads the floor plan as GeoJSON, in metres
 with the dock at the origin.
 
+## Mapping your home by walking it
+
+If your robot can't report its position (as with the Combo Essential), you
+can make the floor plan yourself by walking around with your phone:
+
+```bash
+python3 -m roomba_mapper serve --https --pin 1234
+```
+
+1. Open the printed `https://` address on your phone. The first time, the
+   phone warns that the connection isn't private, because the certificate
+   is made by this program, not a public authority. On an iPhone, tap
+   **Show Details → visit this website**.
+2. Tap **🚶 Walk**, stand right in front of the dock with your back to its
+   wall, and tap **Start at the dock**. Allow motion access if asked. The
+   dock is the map's origin, the same reference point the robot uses.
+3. Turn left or right and walk along the walls in straight lines, about
+   30 cm from them. At every corner tap **↰ Turned left** or
+   **↱ Turned right**. Each wall's length comes from your steps; type the
+   real length into the box to correct it. The app then learns your step
+   length.
+4. Back at the dock, tap **✓ Finish room**. The app closes the outline,
+   shares out any counting error so the walls stay square, and moves the
+   walls out by the distance you kept from them.
+5. To add more, walk to the next room (straight lines, tapping turns) and
+   tap **Trace a room from here**. For furniture, walk around it and tap
+   **Trace furniture from here**.
+6. Fix anything in **✎ Edit map**.
+
+How the measurements work:
+
+- Distances come from counting steps, so expect roughly 5–10% error unless
+  you type measured lengths.
+- Turns are assumed to be right angles. Draw angled walls in the editor
+  afterwards.
+- Motion sensors only work over `https`. If your phone won't allow them,
+  type each wall's length before tapping the turn; everything else works
+  the same.
+
 ## Quick start with the simulator (no robot needed)
 
 ```bash
@@ -202,7 +241,7 @@ Roomba 980. `--pose-mode none` makes it report no position at all.
 
 | command | purpose |
 | --- | --- |
-| `serve` | run the mapper and phone app (`--robot sim/wifi`, `--pin`, `--map`, `--port`, `--model rvg-y1`, `--pose-source auto/state/rrtp`, `--pose-path`, `--pose-units mm/cm/m`, `--pose-angle deg/rad`, `--rrtp-topic`, `--rrtp-contype`) |
+| `serve` | run the mapper and phone app (`--robot sim/wifi`, `--https`, `--pin`, `--map`, `--port`, `--model rvg-y1`, `--pose-source auto/state/rrtp`, `--pose-path`, `--pose-units mm/cm/m`, `--pose-angle deg/rad`, `--rrtp-topic`, `--rrtp-contype`) |
 | `discover` | list Wi-Fi Roombas on the network |
 | `get-password` | fetch and save the robot's local password (`--cloud` or `--ip`) |
 | `probe` | report what a robot supports, find unknown position fields (`--listen`, `--dump`) |
