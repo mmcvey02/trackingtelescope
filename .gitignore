@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+roomba_map.json
+.roomba-map-*.tmp

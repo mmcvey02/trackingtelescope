@@ -1,0 +1,9 @@
+{
+  "name": "Roomba Map",
+  "short_name": "Roomba",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f3f5f4",
+  "theme_color": "#1f6f5c",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

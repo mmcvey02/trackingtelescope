@@ -1,0 +1,2 @@
+# Nothing is needed for the simulator. For a real Roomba over serial:
+pyserial>=3.5

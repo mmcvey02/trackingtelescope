@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1f6f5c">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Roomba Map</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Roomba Map</h1>
+    <span id="mode-pill" class="pill">…</span>
+  </header>
+
+  <main>
+    <section class="card stats" aria-label="Cleaning progress">
+      <div class="progress"><div id="progress-bar"></div></div>
+      <div class="stat-row">
+        <div><b id="stat-percent">–</b><span>cleaned</span></div>
+        <div><b id="stat-remaining">–</b><span>cells to go</span></div>
+        <div><b id="stat-area">–</b><span>m² done</span></div>
+        <div><b id="stat-obstacles">–</b><span>obstacles</span></div>
+      </div>
+      <p id="status" class="status" role="status">Connecting…</p>
+    </section>
+
+    <section class="controls" aria-label="Mode">
+      <button id="btn-auto" class="primary" data-mode="auto">▶ Auto clean</button>
+      <button id="btn-manual" data-mode="manual">✋ Manual</button>
+      <button id="btn-dock" data-mode="returning">⌂ Dock</button>
+      <button id="btn-stop" class="danger" data-mode="idle">■ Stop</button>
+    </section>
+
+    <section class="card map-card">
+      <div id="map-wrap"><canvas id="map" aria-label="Cleaning map"></canvas></div>
+      <div class="legend">
+        <span><i class="sw unknown"></i>Unexplored</span>
+        <span><i class="sw dirty"></i>Needs cleaning</span>
+        <span><i class="sw clean"></i>Cleaned</span>
+        <span><i class="sw obstacle"></i>Obstacle</span>
+        <span><i class="sw nogo"></i>No-go</span>
+      </div>
+    </section>
+
+    <section class="card" aria-label="Tap tool">
+      <h2>Tap / drag on the map to…</h2>
+      <div class="tools" id="tools">
+        <button data-tool="goto" class="active">🎯 Go here</button>
+        <button data-tool="clean">✔ Mark cleaned</button>
+        <button data-tool="dirty">🧹 Needs cleaning</button>
+        <button data-tool="obstacle">▦ Obstacle</button>
+        <button data-tool="nogo">⛔ No-go</button>
+        <button data-tool="unknown">⌫ Erase</button>
+        <button data-tool="dock">⌂ Set dock</button>
+        <button data-tool="robot">🤖 Robot is here</button>
+      </div>
+    </section>
+
+    <section class="card dpad-card" aria-label="Manual drive">
+      <h2>Drive manually</h2>
+      <div class="dpad">
+        <button data-dir="N" aria-label="Up">▲</button>
+        <button data-dir="W" aria-label="Left">◀</button>
+        <button data-dir="E" aria-label="Right">▶</button>
+        <button data-dir="S" aria-label="Down">▼</button>
+      </div>
+    </section>
+
+    <details class="card">
+      <summary>Settings &amp; map</summary>
+      <form id="settings-form">
+        <label>Re-clean a spot after (hours, 0 = never)
+          <input type="number" id="set-stale" min="0" step="0.5" inputmode="decimal"></label>
+        <label class="check"><input type="checkbox" id="set-manual-clean"> Vacuum while driving manually</label>
+        <button type="submit">Save settings</button>
+      </form>
+      <form id="resize-form">
+        <div class="row">
+          <label>Width (cells)<input type="number" id="set-width" min="2" max="200"></label>
+          <label>Height (cells)<input type="number" id="set-height" min="2" max="200"></label>
+        </div>
+        <p class="hint" id="cell-size-hint"></p>
+        <button type="submit">Resize map</button>
+      </form>
+      <div class="row">
+        <button id="btn-new-pass">New cleaning pass</button>
+        <button id="btn-erase" class="danger">Erase whole map</button>
+      </div>
+    </details>
+  </main>
+
+  <dialog id="pin-dialog">
+    <form method="dialog" id="pin-form">
+      <p>Enter the PIN shown when the server was started.</p>
+      <input id="pin-input" type="password" inputmode="numeric" autocomplete="current-password">
+      <button type="submit" class="primary">Unlock</button>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
