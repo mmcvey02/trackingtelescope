@@ -61,28 +61,39 @@ python3 -m roomba_mapper serve --https --pin 1234
 2. Tap **🚶 Walk**, stand right in front of the dock with your back to its
    wall, and tap **Start at the dock**. Allow motion access if asked. The
    dock is the map's origin, the same reference point the robot uses.
-3. Turn left or right and walk along the walls in straight lines, about
-   30 cm from them. At every corner tap **↰ Turned left** or
-   **↱ Turned right**. Each wall's length comes from your steps; type the
-   real length into the box to correct it. The app then learns your step
-   length.
-4. Back at the dock, tap **✓ Finish room**. The app closes the outline,
-   shares out any counting error so the walls stay square, and moves the
-   walls out by the distance you kept from them.
-5. To add more, walk to the next room (straight lines, tapping turns) and
-   tap **Trace a room from here**. For furniture, walk around it and tap
-   **Trace furniture from here**.
+3. Walk along the walls, about 30 cm from them, holding the phone in front
+   of you. You don't need to tap anything at corners:
+   - the phone's step counter measures each wall;
+   - its gyroscope follows your turns;
+   - a corner is added once you keep walking in a new direction, and the
+     app says how far you turned ("↱ Turned right 92°").
+
+   Glancing sideways, or tilting the phone, doesn't count as a turn. To
+   correct a wall's length, type the measured length in the box while
+   you're walking it; the app then learns your step length.
+4. Back at the dock, tap **✓ Finish room**. The server then:
+   - closes the outline, sharing out any leftover gap;
+   - squares up every turn within 15° of a right angle, and keeps other
+     angles (a 45° bay, a slanted wall) as walked;
+   - lines the room up with the dock wall if it's within 10° of it;
+   - moves the walls out by the distance you kept from them.
+
+   Turn off **Square up corners** for rooms with no right angles.
+5. To add more, walk to the next room and tap **Trace a room from here**.
+   For furniture, walk around it and tap **Trace furniture from here**.
 6. Fix anything in **✎ Edit map**.
 
 How the measurements work:
 
 - Distances come from counting steps, so expect roughly 5–10% error unless
   you type measured lengths.
-- Turns are assumed to be right angles. Draw angled walls in the editor
-  afterwards.
-- Motion sensors only work over `https`. If your phone won't allow them,
-  type each wall's length before tapping the turn; everything else works
-  the same.
+- Turns are measured relative to each other, so slow gyroscope drift
+  doesn't bend the room.
+- **That wasn't a corner** removes a corner added by mistake.
+- **Turns come out mirrored** fixes phones that report rotation backwards.
+- Motion sensors only work over `https`. Without a gyroscope, turn buttons
+  appear with an angle box. Without motion access at all, type each wall's
+  length and tap the turns.
 
 ## Quick start with the simulator (no robot needed)
 

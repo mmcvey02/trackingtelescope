@@ -108,14 +108,16 @@
       <div id="walk-intro">
         <ol class="walk-steps">
           <li>Stand right in front of the dock, back to the wall it sits against, facing into the room.</li>
-          <li>Tap <b>Start at the dock</b>. Then turn left or right and walk along the walls in straight lines,
-            about 30 cm from them, holding the phone.</li>
-          <li>At each corner tap the way you turned. When you are back at the dock, tap <b>Finish room</b>.</li>
+          <li>Tap <b>Start at the dock</b>, then just walk along the walls, about 30 cm from them, holding the
+            phone in front of you. The app notices each turn and how far you went.</li>
+          <li>When you are back at the dock, tap <b>Finish room</b>.</li>
         </ol>
         <div class="row">
           <label>Distance from walls (cm)<input type="number" id="walk-gap" value="30" min="0" max="100" inputmode="numeric"></label>
           <label>Your step length (cm)<input type="number" id="walk-step" value="70" min="30" max="120" inputmode="numeric"></label>
         </div>
+        <label class="check"><input type="checkbox" id="walk-square" checked> Square up corners that are nearly 90°
+          (angled walls are kept)</label>
         <button id="walk-start" class="primary wide">Start at the dock</button>
       </div>
       <div id="walk-live" hidden>
@@ -123,12 +125,16 @@
           <span id="walk-what">Tracing a room</span>
           <span><b id="walk-steps">0</b> steps</span>
         </div>
+        <p class="walk-turn" id="walk-turn" aria-live="polite"></p>
         <label>This wall so far (m) – type a measured length to correct it
           <input type="number" id="walk-dist" step="0.05" min="0" inputmode="decimal"></label>
-        <div class="turns">
-          <button data-turn="left">↰ Turned left</button>
-          <button data-turn="right">↱ Turned right</button>
-          <button data-turn="around">↺ Turned back</button>
+        <div id="walk-manual" hidden>
+          <p class="hint">No gyroscope readings – tap each turn yourself.</p>
+          <div class="turns">
+            <button data-turn="1">↰ Turned left</button>
+            <label class="angle">by <input type="number" id="walk-angle" value="90" min="1" max="180" inputmode="numeric">°</label>
+            <button data-turn="-1">↱ Turned right</button>
+          </div>
         </div>
         <div class="row" id="walk-drawing-btns">
           <button id="walk-finish" class="primary">✓ Finish room</button>
@@ -139,10 +145,11 @@
           <button id="walk-new-obstacle">Trace furniture from here</button>
         </div>
         <div class="row">
-          <button id="walk-undo">Undo last corner</button>
+          <button id="walk-undo">That wasn't a corner</button>
           <button id="walk-stop" class="danger">Stop walking</button>
         </div>
       </div>
+      <label class="check"><input type="checkbox" id="walk-reverse"> Turns come out mirrored (fix for some phones)</label>
       <p class="hint" id="walk-note"></p>
     </section>
 

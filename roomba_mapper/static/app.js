@@ -150,7 +150,7 @@
     }
     if (S && S.trail) for (let k = 0; k < S.trail.length; k += 10) pts.push(S.trail[k]);
     if (S && S.robot.pose) pts.push(S.robot.pose);
-    if (walk.active) pts.push(...walk.trail, walkPosition());
+    if (walk.active) pts.push(...walkPathPoints());
     return pts;
   }
 
@@ -811,102 +811,114 @@
 
 
   // ---- walk-to-map ---------------------------------------------------------
-  // Trace rooms by walking along the walls with the phone: steps give the
-  // length of each wall, a tap at each corner gives the turn. See walk.js.
+  // Trace rooms by walking along the walls with the phone. Steps give
+  // distance, the gyroscope gives direction, and a corner is recorded when
+  // you keep walking in a new direction (walk.js). The server turns the
+  // walked path into the outline (closing it, squaring near-right angles,
+  // and moving it out to the walls).
 
-  const WALK_KIND_LABEL = { floor: "room", obstacle: "furniture" };
   const walk = {
-    active: false, drawing: false, kind: "floor",
-    q: 0, pos: [0, 0], shapeStart: [0, 0], legs: [], trail: [],
-    steps: 0, override: null, stepLen: 0.7, gap: 0.3,
-    counter: null, undo: [], shapesMade: 0, sensorSeen: false, wakeLock: null,
+    active: false, drawing: false, kind: "floor", tracker: null,
+    heading: new Walk.HeadingTracker(), counter: new Walk.StepCounter(),
+    trail: [], stepLen: 0.7, gap: 0.3, square: true, shapesMade: 0,
+    sensorSeen: false, gyro: false, wakeLock: null, lastDraw: 0,
   };
   try {
     const saved = parseFloat(localStorage.getItem("roomba-step-len"));
     if (saved > 0.3 && saved < 1.2) { walk.stepLen = saved; $("walk-step").value = Math.round(saved * 100); }
   } catch (_) { /* storage blocked */ }
 
-  function walkDist() {
-    return walk.override !== null ? walk.override : walk.steps * walk.stepLen;
-  }
-
-  function walkPosition() {
-    const [dx, dy] = Walk.DIRS[walk.q];
-    const d = walkDist();
-    return [walk.pos[0] + dx * d, walk.pos[1] + dy * d];
-  }
-
-  function walkNote(text) { $("walk-note").textContent = text; }
+  const walkPosition = () => walk.tracker.position();
+  const walkFacing = () => (walk.gyro ? walk.heading.heading : walk.tracker.legHeading());
+  const walkNote = (text) => { $("walk-note").textContent = text; };
 
   function updateWalkPanel() {
     $("walk-intro").hidden = walk.active;
     $("walk-live").hidden = !walk.active;
     $("btn-walk").setAttribute("aria-pressed", String(!$("walk-card").hidden));
     if (!walk.active) return;
-    const what = WALK_KIND_LABEL[walk.kind];
+    const t = walk.tracker;
+    const what = walk.kind === "floor" ? "a room" : "furniture";
+    const walls = t.legs.length;
     $("walk-what").textContent = walk.drawing
-      ? `Tracing ${what === "room" ? "a room" : "furniture"} – ${walk.legs.length} wall${walk.legs.length === 1 ? "" : "s"} done`
-      : "Walking (not drawing)";
-    $("walk-steps").textContent = walk.steps;
-    if (document.activeElement !== $("walk-dist")) $("walk-dist").value = walkDist().toFixed(2);
+      ? `Tracing ${what} – ${walls} corner${walls === 1 ? "" : "s"}` : "Walking (not drawing)";
+    $("walk-steps").textContent = walk.counter.steps;
+    if (document.activeElement !== $("walk-dist")) $("walk-dist").value = t.legDist().toFixed(2);
+    $("walk-manual").hidden = walk.gyro;
     $("walk-drawing-btns").hidden = !walk.drawing;
     $("walk-moving-btns").hidden = walk.drawing;
-    $("walk-finish").textContent = `✓ Finish ${what}`;
-    $("walk-finish").disabled = walk.legs.length < 2;
-    $("walk-undo").disabled = !walk.undo.length;
+    $("walk-finish").textContent = walk.drawing && walk.kind === "obstacle" ? "✓ Finish furniture" : "✓ Finish room";
+    $("walk-finish").disabled = walls < 2;
+    $("walk-undo").disabled = !walls;
   }
 
-  function snapshot() {
-    return JSON.stringify({ q: walk.q, pos: walk.pos, legs: walk.legs, trail: walk.trail,
-                            drawing: walk.drawing, kind: walk.kind, shapeStart: walk.shapeStart });
+  function learnStepLength(perStep) {
+    if (!perStep) return;
+    walk.stepLen = Math.min(1.2, Math.max(0.3, 0.5 * walk.stepLen + 0.5 * perStep));
+    walk.tracker.stepLen = walk.stepLen;
+    $("walk-step").value = Math.round(walk.stepLen * 100);
+    try { localStorage.setItem("roomba-step-len", String(walk.stepLen)); } catch (_) { /* ignore */ }
   }
 
-  function resetLeg() {
-    walk.steps = 0;
-    walk.override = null;
-    if (walk.counter) walk.counter.steps = 0;
+  function announceTurn(result) {
+    if (!result) return;
+    learnStepLength(result.learned);
+    const deg = Math.round(Math.abs(result.angle));
+    $("walk-turn").textContent = deg < 5 ? "" :
+      `${result.angle > 0 ? "↰ Turned left" : "↱ Turned right"} ${deg}° – corner added`;
+    if (navigator.vibrate) navigator.vibrate(60);
   }
 
   function onMotion(ev) {
     const a = ev.accelerationIncludingGravity;
     if (!a || a.x === null) return;
     walk.sensorSeen = true;
+    walk.heading.addGravity(a.x, a.y, a.z);
+    const r = ev.rotationRate;
+    if (r && r.alpha !== null && r.alpha !== undefined) {
+      walk.heading.addRotation(r.alpha, r.beta, r.gamma, ev.timeStamp);
+      if (!walk.gyro && walk.heading.samples > 5) { walk.gyro = true; updateWalkPanel(); }
+    }
     if (walk.counter.add(a.x, a.y, a.z, ev.timeStamp)) {
-      walk.steps = walk.counter.steps;
-      if (walk.override === null) { updateWalkPanel(); draw(); } else updateWalkPanel();
+      announceTurn(walk.tracker.step(walkFacing()));
+      updateWalkPanel();
+      draw();
+    } else if (ev.timeStamp - walk.lastDraw > 250) {
+      walk.lastDraw = ev.timeStamp;  // keep the facing arrow live while turning
+      draw();
     }
   }
 
   async function startSensors() {
-    walk.counter = new Walk.StepCounter();
     walk.sensorSeen = false;
+    walk.gyro = false;
     if (!window.isSecureContext) {
-      walkNote("Step counting needs the app opened over https (start the server with --https). " +
-               "Until then, type each wall's length in the box before tapping the turn.");
+      walkNote("Motion sensors need the app opened over https (start the server with --https). " +
+               "Until then, type each wall's length and tap the turns yourself.");
       return;
     }
     try {
       if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
-        const answer = await DeviceMotionEvent.requestPermission(); // iPhone asks the user
+        const answer = await DeviceMotionEvent.requestPermission(); // the iPhone asks the user
         if (answer !== "granted") {
-          walkNote("Motion access was declined, so steps can't be counted. Type each wall's length instead " +
-                   "(to allow it later, reload the page and tap Start again).");
+          walkNote("Motion access was declined, so steps and turns can't be sensed. Type each wall's length " +
+                   "and tap the turns (reload and tap Start again to be asked again).");
           return;
         }
       }
       window.addEventListener("devicemotion", onMotion);
-      walkNote("Counting steps. Walk at a steady pace; if a length looks wrong, type the real one.");
+      walkNote("Walk at a steady pace. Corners are added when you keep going in a new direction.");
       setTimeout(() => {
-        if (walk.active && !walk.sensorSeen) {
-          walkNote("No motion data from this phone/browser – type each wall's length before tapping the turn.");
-        }
+        if (!walk.active) return;
+        if (!walk.sensorSeen) walkNote("No motion data from this phone/browser – type each wall's length and tap the turns.");
+        else if (!walk.gyro) walkNote("Steps are counted, but this phone gives no gyroscope readings – tap each turn.");
       }, 3000);
     } catch (err) {
-      walkNote("Couldn't use the motion sensors (" + err.message + "). Type each wall's length instead.");
+      walkNote("Couldn't use the motion sensors (" + err.message + "). Type each wall's length and tap the turns.");
     }
     try {
       if (navigator.wakeLock) walk.wakeLock = await navigator.wakeLock.request("screen");
-    } catch (_) { /* screen may dim; harmless */ }
+    } catch (_) { /* the screen may dim; harmless */ }
   }
 
   function stopSensors() {
@@ -914,22 +926,26 @@
     if (walk.wakeLock) { walk.wakeLock.release().catch(() => {}); walk.wakeLock = null; }
   }
 
+  function newTracker(start, heading) {
+    walk.tracker = new Walk.WalkTracker({ start, heading, stepLen: walk.stepLen });
+  }
+
   function walkStart() {
     walk.gap = Math.max(0, (parseFloat($("walk-gap").value) || 30) / 100);
     walk.stepLen = Math.min(1.2, Math.max(0.3, (parseFloat($("walk-step").value) || 70) / 100));
+    walk.square = $("walk-square").checked;
+    walk.heading = new Walk.HeadingTracker();
+    walk.heading.reverse = $("walk-reverse").checked;
+    walk.counter = new Walk.StepCounter();
     // The dock's centre is ~17 cm from its wall; you stand `gap` from that wall.
-    walk.pos = [Math.max(0, walk.gap - 0.17), 0];
-    walk.shapeStart = walk.pos.slice();
-    walk.trail = [walk.pos.slice()];
-    walk.q = 0;
-    walk.legs = [];
-    walk.undo = [];
+    newTracker([Math.max(0, walk.gap - 0.17), 0], 0);
+    walk.trail = [];
     walk.drawing = true;
     walk.kind = "floor";
     walk.active = true;
+    $("walk-turn").textContent = "";
     document.body.classList.add("walking");
-    resetLeg();
-    startSensors();  // called straight from the tap, as iPhones require
+    startSensors();  // straight from the tap, as iPhones require
     view.userMoved = false;
     updateWalkPanel();
     resizeCanvas();
@@ -939,77 +955,38 @@
     window.scrollTo(0, Math.max(0, mapTop - document.querySelector("header").offsetHeight - 8));
   }
 
-  function walkTurn(which) {
-    walk.undo.push(snapshot());
-    const d = walkDist();
-    // learn the step length when the user types a measured wall length
-    if (walk.override !== null && walk.steps >= 5) {
-      walk.stepLen = Math.min(1.2, Math.max(0.3, 0.5 * walk.stepLen + 0.5 * (walk.override / walk.steps)));
-      $("walk-step").value = Math.round(walk.stepLen * 100);
-      try { localStorage.setItem("roomba-step-len", String(walk.stepLen)); } catch (_) { /* ignore */ }
-    }
-    const first = walk.drawing && !walk.legs.length;
-    if (d > 0 && !(first && d < 0.5)) {  // a step or two before the first turn isn't a wall
-      if (walk.drawing) walk.legs.push({ q: walk.q, dist: d });
-      walk.pos = walkPosition();
-      walk.trail.push(walk.pos.slice());
-    }
-    if (first && d < 0.5) walk.shapeStart = walk.pos.slice();
-    walk.q = Walk.turn(walk.q, which);
-    resetLeg();
-    updateWalkPanel();
-    draw();
-  }
-
   async function walkFinishShape() {
-    const d = walkDist();
-    const legs = walk.legs.concat(d > 0 ? [{ q: walk.q, dist: d }] : []);
-    const pts = Walk.shapeFromWalk(walk.shapeStart, legs, walk.gap, walk.kind);
-    if (!pts) { walkNote("That shape needs at least three walls."); return; }
+    const path = walk.tracker.points();
     walk.shapesMade += 1;
     const name = walk.kind === "floor" ? `Walked room ${walk.shapesMade}` : `Walked furniture ${walk.shapesMade}`;
-    const res = await post("/api/shapes", { kind: walk.kind, points: pts, name });
-    if (!res) return;
+    const res = await post("/api/walk", { kind: walk.kind, path, gap: walk.gap, square: walk.square, name });
+    if (!res) { walk.shapesMade -= 1; return; }
     // you are back where the shape started
-    walk.undo = [];
-    walk.pos = walk.shapeStart.slice();
-    walk.trail.push(walk.pos.slice());
-    walk.legs = [];
+    walk.trail.push(...path);
+    newTracker(path[0], walkFacing());
     walk.drawing = false;
-    resetLeg();
-    walkNote(`Saved "${name}". Walk to the next room or piece of furniture (straight lines, tap each turn), ` +
-             "then start tracing it – or tap Stop walking.");
+    $("walk-turn").textContent = "";
+    walkNote(`Saved "${name}". Walk to the next room or piece of furniture and start tracing it – ` +
+             "or tap Stop walking. Fix anything later in ✎ Edit map.");
     updateWalkPanel();
     draw();
   }
 
   function walkBeginShape(kind) {
-    walk.undo.push(snapshot());
-    const d = walkDist();
-    if (d > 0) { walk.pos = walkPosition(); walk.trail.push(walk.pos.slice()); }
-    resetLeg();
+    walk.trail.push(...walk.tracker.points());
+    newTracker(walkPosition(), walkFacing());
     walk.kind = kind;
     walk.drawing = true;
-    walk.legs = [];
-    walk.shapeStart = walk.pos.slice();
+    $("walk-turn").textContent = "";
     walkNote(kind === "floor"
-      ? "Walk around this room along its walls and tap each turn. Finish back where you started."
-      : "Walk all the way around the furniture, about 30 cm from it, tapping each turn. Finish back where you started.");
-    updateWalkPanel();
-    draw();
-  }
-
-  function walkUndo() {
-    const prev = walk.undo.pop();
-    if (!prev) return;
-    Object.assign(walk, JSON.parse(prev));
-    resetLeg();
+      ? "Walk around this room along its walls. Finish back where you started."
+      : "Walk all the way around the furniture, about 30 cm from it. Finish back where you started.");
     updateWalkPanel();
     draw();
   }
 
   function walkStop() {
-    if (walk.drawing && walk.legs.length && !confirm("Stop and throw away the shape you are tracing?")) return;
+    if (walk.drawing && walk.tracker.legs.length && !confirm("Stop and throw away the shape you are tracing?")) return;
     walk.active = false;
     document.body.classList.remove("walking");
     stopSensors();
@@ -1022,8 +999,12 @@
     draw();
   }
 
+  function walkPathPoints() {
+    return walk.trail.concat(walk.tracker ? walk.tracker.points() : []);
+  }
+
   function drawWalk() {
-    const pts = walk.trail.concat([walkPosition()]);
+    const pts = walkPathPoints();
     ctx.strokeStyle = colors.select;
     ctx.lineWidth = 3;
     ctx.setLineDash([8, 5]);
@@ -1035,17 +1016,16 @@
     ctx.stroke();
     ctx.setLineDash([]);
     if (walk.drawing) {
-      const [sx, sy] = toScreen(...walk.shapeStart);
-      ctx.strokeStyle = colors.select;
+      const [sx, sy] = toScreen(...walk.tracker.start);
       ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(sx, sy, 9, 0, Math.PI * 2); ctx.stroke();
     }
-    const [px, py] = toScreen(...walkPosition());
-    const [hx, hy] = Walk.DIRS[walk.q];
-    const [tx, ty] = toScreen(walkPosition()[0] + hx * 0.4, walkPosition()[1] + hy * 0.4);
+    const [x, y] = walkPosition();
+    const h = walkFacing();
+    const [px, py] = toScreen(x, y);
+    const [tx, ty] = toScreen(x + Math.cos(h) * 0.45, y + Math.sin(h) * 0.45);
     ctx.fillStyle = colors.select;
     ctx.beginPath(); ctx.arc(px, py, 8, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = colors.select;
     ctx.lineWidth = 3;
     ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(tx, ty); ctx.stroke();
     ctx.fillStyle = colors.text;
@@ -1062,25 +1042,35 @@
     if (!card.hidden) card.scrollIntoView({ behavior: "smooth", block: "start" });
   });
   $("walk-start").addEventListener("click", walkStart);
-  document.querySelectorAll("[data-turn]").forEach((b) =>
-    b.addEventListener("click", () => walkTurn(b.dataset.turn)));
+  document.querySelectorAll("[data-turn]").forEach((b) => b.addEventListener("click", () => {
+    const deg = Math.min(180, Math.max(1, parseFloat($("walk-angle").value) || 90));
+    announceTurn(walk.tracker.manualTurn(Number(b.dataset.turn) * deg));
+    updateWalkPanel();
+    draw();
+  }));
   $("walk-dist").addEventListener("input", () => {
     const v = parseFloat($("walk-dist").value);
-    walk.override = Number.isFinite(v) && v >= 0 ? v : null;
+    walk.tracker.setLength(Number.isFinite(v) && v >= 0 ? v : null);
     draw();
   });
   $("walk-finish").addEventListener("click", walkFinishShape);
   $("walk-cancel-shape").addEventListener("click", () => {
-    if (walk.legs.length && !confirm("Throw away the shape you are tracing?")) return;
+    if (walk.tracker.legs.length && !confirm("Throw away the shape you are tracing?")) return;
+    walk.trail.push(...walk.tracker.points());
+    newTracker(walkPosition(), walkFacing());
     walk.drawing = false;
-    walk.legs = [];
     updateWalkPanel();
     draw();
   });
   $("walk-new-room").addEventListener("click", () => walkBeginShape("floor"));
   $("walk-new-obstacle").addEventListener("click", () => walkBeginShape("obstacle"));
-  $("walk-undo").addEventListener("click", walkUndo);
+  $("walk-undo").addEventListener("click", () => {
+    if (walk.tracker.undoCorner()) $("walk-turn").textContent = "Corner removed";
+    updateWalkPanel();
+    draw();
+  });
   $("walk-stop").addEventListener("click", walkStop);
+  $("walk-reverse").addEventListener("change", () => { walk.heading.reverse = $("walk-reverse").checked; });
 
   // ---- layout & theme ------------------------------------------------------
 

@@ -318,6 +318,28 @@ class MapController:
             self._changed()
             return el_id
 
+    def add_walked_shape(self, kind, path, gap=0.3, square=True, name=None):
+        """Outline from a path walked with the phone (see geometry.walk_to_polygon)."""
+        if kind not in ("floor", "obstacle"):
+            raise ValueError("kind must be floor or obstacle")
+        if not isinstance(path, list) or not 3 <= len(path) <= 5000:
+            raise ValueError("a walk needs between 3 and 5000 points")
+        pts = []
+        for p in path:
+            if not (isinstance(p, (list, tuple)) and len(p) == 2):
+                raise ValueError("path points must be [x, y] pairs")
+            x, y = float(p[0]), float(p[1])
+            if not (math.isfinite(x) and math.isfinite(y)):
+                raise ValueError("path point out of range")
+            pts.append((x, y))
+        gap = float(gap)
+        if not 0 <= gap <= 1.5:
+            raise ValueError("gap must be between 0 and 1.5 m")
+        poly = geo.walk_to_polygon(pts, gap=gap, kind=kind, square=bool(square))
+        if poly is None:
+            raise ValueError("that walk doesn't enclose an area - walk all the way round and back to the start")
+        return self.add_shape(kind, [list(p) for p in poly], name=name)
+
     def update_shape(self, el_id, points=None, kind=None, name=None):
         with self.lock:
             self.map.update_element(el_id, points, kind, name)

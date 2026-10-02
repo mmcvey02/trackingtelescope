@@ -1,141 +1,40 @@
 "use strict";
 
 /*
- * Walk-to-map: build room outlines by walking along the walls with a phone.
+ * Walk-to-map: trace rooms by walking along their walls with a phone.
  *
- * The map frame is the robot's: the dock is the origin and +x points straight
- * out of the dock into the room. You start standing at the dock facing into
- * the room, then walk along walls in straight lines; at each corner you tell
- * the app which way you turned. Rooms are almost always square-cornered, so
- * every leg runs along one of four directions; the length of each leg comes
- * from counting steps (and can be typed in instead).
+ * Map frame = the robot's: the dock is the origin and heading 0 (+x) points
+ * straight out of the dock into the room; angles grow counter-clockwise, so
+ * turning left is positive. You start at the dock facing into the room.
  *
- * Pure functions here (no DOM) so they can be unit-tested with node.
+ *   StepCounter     counts steps from the accelerometer
+ *   HeadingTracker  integrates the gyroscope around the vertical axis, so it
+ *                   works however the phone is held
+ *   WalkTracker     turns steps + heading into straight legs, finding a
+ *                   corner whenever you keep walking in a new direction
+ *
+ * Pure logic (no DOM) so it can be unit-tested with node. The finished path
+ * is sent to the server, which closes the loop, squares near-right angles
+ * and offsets the walls (geometry.walk_to_polygon).
  */
 (function (root) {
-  // heading index: 0 = +x (out of the dock), 1 = +y (left), 2 = -x, 3 = -y
-  const DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+  const RAD = Math.PI / 180;
 
-  const turn = (q, which) => (q + ({ left: 1, right: 3, around: 2 }[which] || 0)) % 4;
-
-  function polygonArea(pts) {
-    let a = 0;
-    for (let k = 0; k < pts.length; k++) {
-      const [x1, y1] = pts[k], [x2, y2] = pts[(k + 1) % pts.length];
-      a += x1 * y2 - x2 * y1;
-    }
-    return a / 2;
+  /** Smallest signed difference a - b, in radians (-pi..pi]. */
+  function angleDiff(a, b) {
+    let d = (a - b) % (2 * Math.PI);
+    if (d > Math.PI) d -= 2 * Math.PI;
+    if (d <= -Math.PI) d += 2 * Math.PI;
+    return d;
   }
 
-  /** Merge consecutive legs in the same direction and drop zero-length ones. */
-  function mergeLegs(legs) {
-    const out = [];
-    for (const leg of legs) {
-      if (!(leg.dist > 0)) continue;
-      const last = out[out.length - 1];
-      if (last && last.q === leg.q) last.dist += leg.dist;
-      else out.push({ q: leg.q, dist: leg.dist });
-    }
-    return out;
+  function meanAngle(list) {
+    let s = 0, c = 0;
+    for (const a of list) { s += Math.sin(a); c += Math.cos(a); }
+    return Math.atan2(s, c);
   }
 
-  /** Corner points visited when walking `legs` from `start`. */
-  function walkPoints(start, legs) {
-    const pts = [start.slice()];
-    for (const leg of legs) {
-      const [dx, dy] = DIRS[leg.q];
-      const [x, y] = pts[pts.length - 1];
-      pts.push([x + dx * leg.dist, y + dy * leg.dist]);
-    }
-    return pts;
-  }
-
-  /**
-   * Close a walked loop. Step counting is never exact, so the walk rarely
-   * ends where it began; the gap is shared out over the legs in proportion
-   * to their length (x-gap over the x legs, y-gap over the y legs), keeping
-   * every wall square. Returns the corrected legs.
-   */
-  function closeLoop(legs) {
-    const merged = mergeLegs(legs);
-    const end = walkPoints([0, 0], merged).pop();
-    const fixed = merged.map((l) => ({ q: l.q, dist: l.dist }));
-    for (const axis of [0, 1]) {
-      const along = fixed.filter((l) => DIRS[l.q][axis] !== 0);
-      const total = along.reduce((s, l) => s + l.dist, 0);
-      const gap = end[axis];
-      if (!total || Math.abs(gap) < 1e-9) continue;
-      for (const l of along) {
-        // a leg in the + direction shrinks by its share of a positive gap, a - leg grows
-        l.dist = Math.max(0, l.dist - DIRS[l.q][axis] * gap * (l.dist / total));
-      }
-    }
-    return mergeLegs(fixed);
-  }
-
-  function intersect(p, d, q, e) {
-    const den = d[0] * e[1] - d[1] * e[0];
-    if (Math.abs(den) < 1e-12) return null;
-    const t = ((q[0] - p[0]) * e[1] - (q[1] - p[1]) * e[0]) / den;
-    return [p[0] + t * d[0], p[1] + t * d[1]];
-  }
-
-  /** Move every edge of a polygon outward by `d` metres (negative = inward). */
-  function offsetPolygon(pts, d) {
-    const n = pts.length;
-    if (n < 3 || !d) return pts.map((p) => p.slice());
-    const sign = polygonArea(pts) >= 0 ? 1 : -1;
-    const lines = [];
-    for (let k = 0; k < n; k++) {
-      const a = pts[k], b = pts[(k + 1) % n];
-      const dx = b[0] - a[0], dy = b[1] - a[1];
-      const len = Math.hypot(dx, dy) || 1;
-      const nx = sign * dy / len, ny = -sign * dx / len; // outward normal
-      lines.push([[a[0] + nx * d, a[1] + ny * d], [dx, dy]]);
-    }
-    return pts.map((p, k) => {
-      const prev = lines[(k - 1 + n) % n], cur = lines[k];
-      return intersect(prev[0], prev[1], cur[0], cur[1]) || cur[0];
-    });
-  }
-
-  /** Drop corners where the outline just carries straight on (e.g. the dock spot mid-wall). */
-  function removeStraight(pts) {
-    let out = pts.slice();
-    let changed = true;
-    while (changed && out.length > 3) {
-      changed = false;
-      for (let k = 0; k < out.length; k++) {
-        const a = out[(k - 1 + out.length) % out.length], b = out[k], c = out[(k + 1) % out.length];
-        const cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
-        const tooClose = Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-6;
-        if (Math.abs(cross) < 1e-9 || tooClose) { out.splice(k, 1); changed = true; break; }
-      }
-    }
-    return out;
-  }
-
-  /**
-   * Finished shape from a walk: close the loop, then shift the walls out by
-   * how far from them you walked (rooms), or in (walking around furniture).
-   */
-  function shapeFromWalk(start, legs, wallGap, kind) {
-    const closed = closeLoop(legs);
-    let pts = walkPoints(start, closed);
-    pts.pop(); // last point == first point after closing
-    pts = removeStraight(pts);
-    if (pts.length < 3) return null;
-    const gap = kind === "obstacle" ? -wallGap : wallGap;
-    pts = offsetPolygon(pts, gap);
-    if (polygonArea(pts) < 0) pts.reverse();
-    return pts.map(([x, y]) => [Math.round(x * 100) / 100, Math.round(y * 100) / 100]);
-  }
-
-  /**
-   * Step detector for accelerometer samples (m/s^2, gravity included).
-   * Each step shows up as a bump in total acceleration; a slow average
-   * tracks the baseline and a hysteresis threshold counts each bump once.
-   */
+  /** Step detector for accelerometer samples (m/s^2, gravity included). */
   class StepCounter {
     constructor(opts = {}) {
       this.high = opts.high || 1.2;   // m/s^2 above baseline to count a step
@@ -170,8 +69,179 @@
     }
   }
 
-  const api = { DIRS, turn, mergeLegs, walkPoints, closeLoop, offsetPolygon, shapeFromWalk, removeStraight,
-                polygonArea, StepCounter };
+  /**
+   * Heading from the gyroscope. The phone's rotation rate (deg/s about its
+   * own x, y, z axes) is projected onto the vertical, found from gravity, so
+   * only turning your body counts - not tilting the phone. Browsers disagree
+   * on the sign of the gravity reading, so "up" is taken as whichever way
+   * points out of the screen/top edge, as a phone held in front of you does.
+   */
+  class HeadingTracker {
+    constructor() {
+      this.heading = 0;      // radians, 0 = facing into the room from the dock
+      this.gravity = null;
+      this.lastT = null;
+      this.reverse = false;  // user setting, if a browser reports turns backwards
+      this.samples = 0;
+    }
+
+    addGravity(x, y, z) {
+      if (this.gravity === null) { this.gravity = [x, y, z]; return; }
+      const g = this.gravity;
+      for (const [i, v] of [x, y, z].entries()) g[i] += 0.1 * (v - g[i]);
+    }
+
+    up() {
+      if (!this.gravity) return null;
+      let [x, y, z] = this.gravity;
+      const n = Math.hypot(x, y, z);
+      if (n < 1) return null;
+      [x, y, z] = [x / n, y / n, z / n];
+      if (y + z < 0) [x, y, z] = [-x, -y, -z];
+      return [x, y, z];
+    }
+
+    /** alpha/beta/gamma: rotation rate about the device z/x/y axes, deg/s. */
+    addRotation(alpha, beta, gamma, tMs) {
+      const u = this.up();
+      const t0 = this.lastT;
+      this.lastT = tMs;
+      if (!u || t0 === null || alpha === null) return;
+      const dt = Math.min(0.2, Math.max(0, (tMs - t0) / 1000));
+      const yawRate = (beta || 0) * u[0] + (gamma || 0) * u[1] + (alpha || 0) * u[2];
+      this.heading += (this.reverse ? -1 : 1) * yawRate * RAD * dt;
+      this.samples += 1;
+    }
+  }
+
+  /**
+   * Straight legs from steps and heading. A corner is recorded once you have
+   * taken `confirmSteps` steps in a direction more than `turnDeg` away from
+   * the current wall - so glancing around, or turning back, doesn't count.
+   */
+  class WalkTracker {
+    constructor(opts = {}) {
+      this.stepLen = opts.stepLen || 0.7;
+      this.turnRad = (opts.turnDeg || 30) * RAD;
+      this.confirmSteps = opts.confirmSteps || 2;
+      this.start = (opts.start || [0, 0]).slice();
+      this.legs = [];        // finished walls: {h, dist}
+      this.newLeg(opts.heading || 0);
+    }
+
+    newLeg(h, base = 0) {
+      this.leg = { h, hs: [], steps: 0, override: null, base };
+      this.pending = null;
+    }
+
+    legHeading() { return this.leg.hs.length ? meanAngle(this.leg.hs) : this.leg.h; }
+
+    legDist() {
+      const l = this.leg;
+      return l.base + (l.override !== null ? l.override : l.steps * this.stepLen);
+    }
+
+    /** Type the real length of the current wall. Returns the step length learned, if any. */
+    setLength(metres) {
+      this.leg.override = metres === null ? null : Math.max(0, metres - this.leg.base);
+    }
+
+    /** A step was taken while facing `heading`. Returns {angle} when a corner is found. */
+    step(heading) {
+      if (this.pending) {
+        if (Math.abs(angleDiff(heading, this.legHeading())) < this.turnRad) {
+          // back on the old line: it was a glance or a wobble, not a corner.
+          // Those steps still count, along the wall's direction.
+          const h = this.legHeading();
+          for (let i = 0; i < this.pending.hs.length; i++) this.leg.hs.push(h);
+          this.leg.steps += this.pending.hs.length;
+          this.pending = null;
+          this.leg.hs.push(heading);
+          this.leg.steps += 1;
+          return null;
+        }
+        this.pending.hs.push(heading);
+        if (this.pending.hs.length >= this.confirmSteps) return this.corner();
+        return null;
+      }
+      if (this.leg.steps + this.leg.hs.length > 0 || this.leg.base > 0) {
+        if (Math.abs(angleDiff(heading, this.legHeading())) >= this.turnRad) {
+          this.pending = { hs: [heading] };
+          return null;
+        }
+      } else if (Math.abs(angleDiff(heading, this.leg.h)) >= this.turnRad) {
+        // turned before walking (e.g. at the dock): just face the new way
+        this.leg.h = heading;
+      }
+      this.leg.hs.push(heading);
+      this.leg.steps += 1;
+      return null;
+    }
+
+    corner() {
+      const old = this.legHeading();
+      const learned = this.finishLeg();
+      const hs = this.pending ? this.pending.hs : [];
+      const h = hs.length ? meanAngle(hs) : old;
+      this.newLeg(h);
+      this.leg.hs = hs;
+      this.leg.steps = hs.length;
+      return { angle: angleDiff(h, old) / RAD, learned };
+    }
+
+    finishLeg() {
+      let learned = null;
+      const l = this.leg;
+      if (l.override !== null && l.steps >= 5) learned = l.override / l.steps;
+      const d = this.legDist();
+      if (d > 0) this.legs.push({ h: this.legHeading(), dist: d });
+      return learned;
+    }
+
+    /** For phones without a gyroscope: the user says how far they turned (left = +). */
+    manualTurn(degrees) {
+      const h = this.legHeading() + degrees * RAD;
+      const learned = this.finishLeg();
+      this.newLeg(h);
+      return { angle: degrees, learned };
+    }
+
+    /** "That wasn't a corner": merge the last wall back into the current one. */
+    undoCorner() {
+      const prev = this.legs.pop();
+      if (!prev) return false;
+      const extra = this.legDist();
+      this.newLeg(prev.h, prev.dist + extra);
+      return true;
+    }
+
+    /** Corner points from the start to where you are now. */
+    points() {
+      const pts = [this.start.slice()];
+      let [x, y] = this.start;
+      const legs = this.legs.concat([{ h: this.legHeading(), dist: this.legDist() }]);
+      for (const leg of legs) {
+        if (!(leg.dist > 0)) continue;
+        x += Math.cos(leg.h) * leg.dist;
+        y += Math.sin(leg.h) * leg.dist;
+        pts.push([x, y]);
+      }
+      if (this.pending) {
+        const h = meanAngle(this.pending.hs);
+        x += Math.cos(h) * this.pending.hs.length * this.stepLen;
+        y += Math.sin(h) * this.pending.hs.length * this.stepLen;
+        pts.push([x, y]);
+      }
+      return pts;
+    }
+
+    position() {
+      const pts = this.points();
+      return pts[pts.length - 1];
+    }
+  }
+
+  const api = { angleDiff, meanAngle, StepCounter, HeadingTracker, WalkTracker };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.Walk = api;
 })(typeof window !== "undefined" ? window : globalThis);

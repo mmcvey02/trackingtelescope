@@ -417,6 +417,127 @@ def extract_polygons(cells, res, simplify_tol, min_area, hole_min_area, square=T
     return outers, holes
 
 
+# -- shapes walked with a phone ---------------------------------------------------
+
+
+def close_loop(points):
+    """Make a walked loop end where it started.
+
+    Step counting and gyro drift leave a gap between the last and first
+    point; it is shared out along the walk in proportion to the distance
+    walked, so early corners barely move and late ones move most.
+    Returns the corrected points without the repeated end point.
+    """
+    pts = [tuple(map(float, p)) for p in points]
+    if len(pts) < 3:
+        return pts
+    ex, ey = pts[-1][0] - pts[0][0], pts[-1][1] - pts[0][1]
+    lengths = [0.0]
+    for a, b in zip(pts, pts[1:]):
+        lengths.append(lengths[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
+    total = lengths[-1] or 1.0
+    fixed = [(x - ex * l / total, y - ey * l / total) for (x, y), l in zip(pts, lengths)]
+    return fixed[:-1]
+
+
+def offset_polygon(pts, d):
+    """Move every edge outward by d metres (negative d = inward)."""
+    n = len(pts)
+    if n < 3 or not d:
+        return list(pts)
+    sign = 1.0 if polygon_area(pts) >= 0 else -1.0
+    lines = []
+    for k in range(n):
+        (x1, y1), (x2, y2) = pts[k], pts[(k + 1) % n]
+        dx, dy = x2 - x1, y2 - y1
+        length = math.hypot(dx, dy) or 1.0
+        nx, ny = sign * dy / length, -sign * dx / length  # outward normal
+        lines.append(((x1 + nx * d, y1 + ny * d), (dx, dy)))
+    out = []
+    for k in range(n):
+        p = _intersect(lines[k - 1], lines[k])
+        out.append(p if p is not None else lines[k][0])
+    return out
+
+
+def square_turns(points, tol_deg=15.0):
+    """Snap each turn of an open walked path to a multiple of 90 degrees when close.
+
+    Works on the turn between consecutive walls rather than on absolute
+    directions, so slow gyro drift over a long walk doesn't stop later
+    corners from being squared. Turns that are clearly not right angles
+    (a 45 degree bay, say) are kept. Wall lengths are unchanged.
+    """
+    pts = [tuple(map(float, p)) for p in points]
+    legs = []
+    for a, b in zip(pts, pts[1:]):
+        length = math.hypot(b[0] - a[0], b[1] - a[1])
+        if length > 1e-9:
+            legs.append((math.atan2(b[1] - a[1], b[0] - a[0]), length))
+    if len(legs) < 2:
+        return pts
+    tol = math.radians(tol_deg)
+    out = [pts[0]]
+    heading = legs[0][0]
+    for k, (h, length) in enumerate(legs):
+        if k:
+            turn = math.atan2(math.sin(h - legs[k - 1][0]), math.cos(h - legs[k - 1][0]))
+            right = round(turn / (math.pi / 2)) * (math.pi / 2)
+            heading += right if abs(turn - right) <= tol else turn
+        x, y = out[-1]
+        out.append((x + math.cos(heading) * length, y + math.sin(heading) * length))
+    return out
+
+
+def align_to_axes(pts, pivot=(0.0, 0.0), tol_deg=10.0):
+    """Rotate a shape so its walls line up with the dock's axes, if they nearly do.
+
+    You start a walk at the dock facing straight into the room, and homes are
+    built square, so walls a few degrees off the dock's axes are gyro drift.
+    """
+    theta = math.degrees(dominant_angle(pts))
+    delta = theta if theta < 45 else theta - 90
+    if abs(delta) > tol_deg or abs(delta) < 1e-6:
+        return pts
+    tf = (0.0, 0.0, math.radians(-delta))
+    px, py = pivot
+    out = []
+    for x, y in pts:
+        rx, ry = transform(x - px, y - py, tf)
+        out.append((rx + px, ry + py))
+    return out
+
+
+def walk_to_polygon(points, gap=0.3, kind="floor", square=True, simplify_tol=0.12, angle_tol=15.0):
+    """Turn the path walked along a room's walls (or around furniture) into its outline.
+
+    1. drop wobbles smaller than simplify_tol, 2. square up turns within
+    angle_tol of a right angle (other angles are kept), 3. close the loop,
+    4. move the walls out by the distance walked from them (in, around
+    furniture). Returns counter-clockwise points, or None if too small.
+    """
+    pts = [tuple(map(float, p)) for p in points]
+    if len(pts) < 4:
+        return None
+    pts = _dp(pts, simplify_tol)
+    if square:
+        pts = square_turns(pts, angle_tol)
+    pts = close_loop(pts)
+    if len(pts) < 3:
+        return None
+    pts = remove_collinear(pts)
+    if square and len(pts) >= 4:
+        # tidy what the loop closure bent: re-square walls against each other
+        pts = orthogonalize(pts, angle_tol_deg=6.0, chamfer_m=0.0)
+        pts = align_to_axes(pts, pivot=pts[0])
+    pts = offset_polygon(pts, -gap if kind == "obstacle" else gap)
+    if polygon_area(pts) < 0:
+        pts = list(reversed(pts))
+    if abs(polygon_area(pts)) < 0.05:
+        return None
+    return [(round(x, 3), round(y, 3)) for x, y in pts]
+
+
 # -- frames & alignment -------------------------------------------------------
 
 

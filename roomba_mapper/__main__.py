@@ -159,7 +159,12 @@ def cmd_serve(args):
         except RuntimeError as exc:
             controller.shutdown()
             sys.exit(f"{exc}\nRun without --https and type wall lengths by hand instead.")
-    server = make_server(controller, args.host, args.port, args.pin, ssl_context)
+    try:
+        server = make_server(controller, args.host, args.port, args.pin, ssl_context)
+    except OSError as exc:
+        controller.shutdown()
+        sys.exit(f"Can't listen on port {args.port} ({exc.strerror}). Is the mapper already running? "
+                 "Stop it, or pick another port with --port.")
     shown = lan_address() if args.host in ("0.0.0.0", "") else args.host
     print(f"Roomba mapper: {link.name}. Map file: {store.path}")
     scheme = "https" if ssl_context else "http"

@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import shutil
 import ssl
@@ -8,6 +9,7 @@ import threading
 import unittest
 import urllib.request
 
+from roomba_mapper import geometry as geo
 from roomba_mapper.controller import MapController
 from roomba_mapper.geomap import GeoMap
 from roomba_mapper.server import https_context, make_server
@@ -33,37 +35,56 @@ def run_js(body):
 
 
 @unittest.skipUnless(NODE, "needs node to test the browser code")
-class WalkGeometryTests(unittest.TestCase):
-    def test_room_walked_from_the_dock(self):
-        # 4.8 x 3.4 m room, dock mid-west wall, walked 30 cm from the walls
-        pts = run_js('''console.log(JSON.stringify(W.shapeFromWalk([0.13, 0],
-            [{q:1,dist:1.4},{q:0,dist:4.2},{q:3,dist:2.8},{q:2,dist:4.2},{q:1,dist:1.4}], 0.3, "floor")))''')
-        self.assertEqual(pts, [[-0.17, -1.7], [4.63, -1.7], [4.63, 1.7], [-0.17, 1.7]])
+class WalkSensorTests(unittest.TestCase):
+    def test_heading_counts_body_turns_however_the_phone_is_held(self):
+        res = run_js('''
+            const D = Math.PI / 180, out = [];
+            const turn = (g, rate, axis) => {
+              const h = new W.HeadingTracker();
+              for (let i = 0; i < 10; i++) h.addGravity(...g);
+              for (let t = 0; t <= 1000; t += 10) {
+                const r = { alpha: 0, beta: 0, gamma: 0 }; r[axis] = rate;
+                h.addRotation(r.alpha, r.beta, r.gamma, t);
+              }
+              return Math.round(h.heading / D);
+            };
+            out.push(turn([0, 0, 9.81], 90, "alpha"));     // flat, left
+            out.push(turn([0, 9.81, 0], -90, "gamma"));    // upright, right
+            out.push(turn([0, -9.81, 0], 90, "gamma"));    // upright, gravity sign flipped (iOS), left
+            out.push(turn([0, 9.81, 0], 60, "beta"));      // tilting the phone, not turning
+            console.log(JSON.stringify(out));''')
+        self.assertEqual(res, [90, -90, 90, 0])
 
-    def test_counting_errors_are_shared_out_and_walls_stay_square(self):
-        pts = run_js('''console.log(JSON.stringify(W.shapeFromWalk([0, 0],
-            [{q:0,dist:4.3},{q:1,dist:3.1},{q:2,dist:3.9},{q:3,dist:2.9}], 0, "floor")))''')
-        self.assertEqual(len(pts), 4)
-        xs = sorted({p[0] for p in pts})
-        ys = sorted({p[1] for p in pts})
-        self.assertEqual(len(xs), 2)  # every wall is axis-aligned
-        self.assertEqual(len(ys), 2)
-        self.assertAlmostEqual(xs[1] - xs[0], 4.1, delta=0.02)  # between 3.9 and 4.3
-        self.assertAlmostEqual(ys[1] - ys[0], 3.0, delta=0.02)
+    def test_corners_found_and_glances_ignored(self):
+        res = run_js('''
+            const D = Math.PI / 180; let seed = 5;
+            const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+            const w = new W.WalkTracker({ stepLen: 0.5 }), corners = [];
+            const walk = (n, deg) => { for (let i = 0; i < n; i++) {
+              const r = w.step((deg + (rnd() - 0.5) * 20) * D); if (r) corners.push(Math.round(r.angle)); } };
+            walk(4, 90); walk(1, 0); walk(1, 90);        // turned left at the dock; a glance mid-wall
+            walk(8, 0); walk(4, -90); walk(2, -135); walk(6, 180); walk(3, 90);
+            console.log(JSON.stringify({ corners, pts: w.points().map(p => p.map(v => +v.toFixed(1))) }));''')
+        self.assertEqual(len(res["corners"]), 5)
+        for got, want in zip(res["corners"], [-90, -90, -45, -45, -90]):
+            self.assertAlmostEqual(got, want, delta=8)
+        self.assertEqual(res["pts"][1], [0.1, 3.0])  # first wall: 6 steps of 0.5 m, glance included
 
-    def test_furniture_shrinks_and_l_shapes_work(self):
-        res = run_js('''console.log(JSON.stringify([
-            W.shapeFromWalk([1.7, 1.7], [{q:0,dist:1.6},{q:1,dist:1.6},{q:2,dist:1.6},{q:3,dist:1.6}], 0.3, "obstacle"),
-            W.shapeFromWalk([0, 0], [{q:3,dist:2},{q:0,dist:4},{q:1,dist:4},{q:2,dist:2},{q:3,dist:2},{q:2,dist:2}], 0, "floor"),
-            W.polygonArea(W.shapeFromWalk([0, 0], [{q:3,dist:2},{q:0,dist:4},{q:1,dist:4},{q:2,dist:2},{q:3,dist:2},{q:2,dist:2}], 0, "floor"))
-        ]))''')
-        self.assertEqual(res[0], [[2, 2], [3, 2], [3, 3], [2, 3]])
-        self.assertEqual(len(res[1]), 6)
-        self.assertAlmostEqual(res[2], 12.0)  # 4x4 minus a 2x2 notch, stored counter-clockwise
-
-    def test_turns(self):
-        res = run_js('console.log(JSON.stringify([W.turn(0,"left"), W.turn(0,"right"), W.turn(1,"around")]))')
-        self.assertEqual(res, [1, 3, 3])
+    def test_manual_turns_typed_lengths_and_undo(self):
+        res = run_js('''
+            const w = new W.WalkTracker({ stepLen: 0.7 });
+            for (let i = 0; i < 6; i++) w.step(0);
+            w.setLength(4.8);                      // measured 4.8 m: 0.8 m per step
+            const t = w.manualTurn(90);
+            for (let i = 0; i < 3; i++) w.step(Math.PI / 2);
+            const before = w.points().length;
+            w.manualTurn(-30);
+            w.undoCorner();                         // "that wasn't a corner"
+            console.log(JSON.stringify({ learned: t.learned, before, after: w.points().length,
+                                         pts: w.points().map(p => p.map(v => +v.toFixed(2))) }));''')
+        self.assertAlmostEqual(res["learned"], 0.8)
+        self.assertEqual(res["after"], res["before"])
+        self.assertEqual(res["pts"], [[0, 0], [4.8, 0], [4.8, 2.1]])
 
     def test_step_counter(self):
         res = run_js('''
@@ -75,6 +96,69 @@ class WalkGeometryTests(unittest.TestCase):
             }
             console.log(JSON.stringify([walking.steps, still.steps]));''')
         self.assertEqual(res, [20, 0])
+
+
+class WalkOutlineTests(unittest.TestCase):
+    """geometry.walk_to_polygon: from the walked path to the room outline."""
+
+    def corners(self, pts):
+        out = []
+        for k in range(len(pts)):
+            a, b, c = pts[k - 1], pts[k], pts[(k + 1) % len(pts)]
+            t = math.degrees(math.atan2(c[1] - b[1], c[0] - b[0]) - math.atan2(b[1] - a[1], b[0] - a[0]))
+            out.append(round((t + 180) % 360 - 180))
+        return out
+
+    def test_room_walked_from_the_dock(self):
+        # 4.8 x 3.4 m room, dock mid-west wall, walked 30 cm from the walls
+        path = [(0.13, 0), (0.13, 1.4), (4.33, 1.4), (4.33, -1.4), (0.13, -1.4), (0.13, 0)]
+        pts = geo.walk_to_polygon(path, gap=0.3)
+        self.assertEqual(sorted({round(x, 2) for x, _ in pts}), [-0.17, 4.63])
+        self.assertEqual(sorted({round(y, 2) for _, y in pts}), [-1.7, 1.7])
+
+    def test_drifting_gyro_still_gives_square_corners(self):
+        # each turn over-rotated by 4 degrees: 16 degrees of drift by the end
+        path, h, (x, y) = [(0.0, 0.0)], 0.0, (0.0, 0.0)
+        for length in (4, 3, 4, 3):
+            x += math.cos(h) * length
+            y += math.sin(h) * length
+            path.append((x, y))
+            h += math.radians(94)
+        pts = geo.walk_to_polygon(path, gap=0)
+        self.assertEqual(self.corners(pts), [90, 90, 90, 90])
+        self.assertAlmostEqual(abs(geo.polygon_area(pts)), 12.0, delta=0.6)
+        self.assertEqual(len({round(x, 2) for x, _ in pts}), 2)  # lined up with the dock
+
+    def test_angled_walls_are_kept(self):
+        path = [(0, 0), (4, 0), (4, 2), (3, 3), (0, 3), (0.05, 0.03)]  # 45 degree cut corner
+        pts = geo.walk_to_polygon(path, gap=0)
+        self.assertEqual(len(pts), 5)
+        self.assertEqual(sorted(self.corners(pts)), [45, 45, 90, 90, 90])
+        raw = geo.walk_to_polygon([(0, 0), (4, 0.3), (4.2, 3), (0, 3), (0, 0.1)], gap=0, square=False)
+        self.assertNotEqual(self.corners(raw), [90, 90, 90, 90])  # squaring switched off
+
+    def test_rooms_at_an_angle_to_the_dock_keep_their_angle(self):
+        tf = (0, 0, math.radians(30))
+        path = [geo.transform(x, y, tf) for x, y in [(0, 0), (4, 0), (4, 3), (0, 3), (0, 0.05)]]
+        pts = geo.walk_to_polygon(path, gap=0)
+        self.assertAlmostEqual(math.degrees(geo.dominant_angle(pts)), 30, delta=1)
+
+    def test_furniture_shrinks(self):
+        pts = geo.walk_to_polygon([(1.7, 1.7), (3.3, 1.7), (3.3, 3.3), (1.7, 3.3), (1.7, 1.71)],
+                                  gap=0.3, kind="obstacle")
+        self.assertEqual(sorted({round(x, 1) for x, _ in pts}), [2.0, 3.0])
+
+    def test_api(self):
+        with tempfile.TemporaryDirectory() as d:
+            ctrl = MapController(MapStore(os.path.join(d, "m.json")), DirectSimLink(SimRoomba(seed=1)))
+            el = ctrl.add_walked_shape("floor", [[0, 0], [4, 0], [4, 3], [0, 3], [0, 0.1]], gap=0, name="Hall")
+            self.assertEqual(ctrl.map.elements[0]["id"], el)
+            self.assertEqual(ctrl.map.elements[0]["name"], "Hall")
+            for bad in ([[0, 0], [1, 1]], "x", [[0, 0], [1, 0], [2, 0], [3, 0]]):
+                with self.assertRaises(ValueError):
+                    ctrl.add_walked_shape("floor", bad)
+            with self.assertRaises(ValueError):
+                ctrl.add_walked_shape("lava", [[0, 0], [4, 0], [4, 3], [0, 3]])
 
 
 class UntrackedRobotTests(unittest.TestCase):

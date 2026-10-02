@@ -60,6 +60,8 @@ def make_handler(controller, pin=None):
     routes = {
         "/api/command": lambda b: controller.command(b.get("command"), b.get("mode")),
         "/api/shapes": lambda b: controller.add_shape(b.get("kind"), b.get("points"), b.get("name")),
+        "/api/walk": lambda b: controller.add_walked_shape(
+            b.get("kind"), b.get("path"), b.get("gap", 0.3), b.get("square", True), b.get("name")),
         "/api/shapes/update": lambda b: controller.update_shape(
             _int(b.get("id"), "id"), b.get("points"), b.get("kind"), b.get("name")),
         "/api/shapes/delete": lambda b: controller.delete_shape(_int(b.get("id"), "id")),
