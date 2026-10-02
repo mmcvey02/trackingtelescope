@@ -5,6 +5,7 @@ Commands:
   discover      find Wi-Fi Roombas on the network
   get-password  read the robot's local password (from the robot, or your iRobot account)
   probe         check what a robot supports (local connection, positions)
+  cloud-probe   see what maps and cleaning history iRobot's servers hold for your robot
   emulate       pretend to be a Wi-Fi Roomba, for trying everything without one
 """
 
@@ -80,6 +81,12 @@ def build_parser():
     g.add_argument("--country", default="US", help="account country code (with --cloud)")
     g.add_argument("--config", default=DEFAULT_CONFIG)
     g.add_argument("--no-save", action="store_true")
+
+    cp = sub.add_parser("cloud-probe", help="see what maps/history iRobot's servers hold for your robot")
+    cp.add_argument("--email", help="iRobot account e-mail")
+    cp.add_argument("--country", default="US", help="account country code")
+    cp.add_argument("--config", default=DEFAULT_CONFIG)
+    cp.add_argument("--out", default="roomba_cloud", help="folder for the downloaded data")
 
     pr = sub.add_parser("probe", help="check what a robot supports")
     pr.add_argument("--ip")
@@ -226,6 +233,19 @@ def cmd_probe(args):
     return 0
 
 
+def cmd_cloud_probe(args):
+    from .cloud import CloudError, cloud_probe
+    cfg = load_config(args.config)
+    email = args.email or input("iRobot account e-mail: ")
+    pw = getpass.getpass("iRobot account password (sent only to iRobot): ")
+    try:
+        cloud_probe(email, pw, args.country, blid=cfg.get("blid"), out_dir=args.out)
+    except CloudError as exc:
+        print(f"Stopped: {exc}")
+        return 1
+    return 0
+
+
 def cmd_emulate(args):
     from .emulator import RoombaEmulator
     emu = RoombaEmulator(args.host, args.port, args.blid, args.password, sku=args.sku,
@@ -251,7 +271,7 @@ def main(argv=None):
         argv = ["serve"] + argv
     args = parser.parse_args(argv)
     handlers = {"serve": cmd_serve, "discover": cmd_discover, "get-password": cmd_get_password,
-                "probe": cmd_probe, "emulate": cmd_emulate}
+                "probe": cmd_probe, "cloud-probe": cmd_cloud_probe, "emulate": cmd_emulate}
     return handlers[args.cmd](args) or 0
 
 

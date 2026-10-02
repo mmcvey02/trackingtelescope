@@ -129,6 +129,27 @@ What to do with the result:
 - **Nothing is found.** Look through `roomba_probe.jsonl` and share it so
   the format can be worked out. Meanwhile you can draw the map by hand.
 
+### Reading maps from your iRobot account (`cloud-probe`)
+
+Newer robots such as the Combo Essential upload each clean's map to
+iRobot. `cloud-probe` logs in to your iRobot account the same way the
+iRobot app does, then asks for:
+
+- the robot's maps (rooms, borders, dock, and on some models the
+  robot's paths and coverage);
+- its cleaning history.
+
+```bash
+python3 -m roomba_mapper cloud-probe
+```
+
+Your password goes only to iRobot's login service. No tokens are saved.
+Everything received is written to the `roomba_cloud/` folder, with
+passwords, tokens and download links removed.
+
+This API is private and undocumented: the requests follow the community
+project roombapy-prime, and iRobot may change or block them at any time.
+
 ### Things to know about Wi-Fi Roombas
 
 - **The robot steers itself.** No Wi-Fi command drives a Roomba around, so
@@ -185,6 +206,7 @@ Roomba 980. `--pose-mode none` makes it report no position at all.
 | `discover` | list Wi-Fi Roombas on the network |
 | `get-password` | fetch and save the robot's local password (`--cloud` or `--ip`) |
 | `probe` | report what a robot supports, find unknown position fields (`--listen`, `--dump`) |
+| `cloud-probe` | download the maps and cleaning history iRobot holds for your robot (`--email`, `--country`, `--out`) |
 | `emulate` | pretend to be a Wi-Fi Roomba |
 
 ## Code layout
