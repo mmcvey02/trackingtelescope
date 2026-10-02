@@ -138,13 +138,19 @@ What to do with the result:
 - **One local connection at a time.** Roombas accept a single local
   connection. Close the iRobot app, and any Home Assistant integration,
   while the mapper is running.
-- **Local support on the Combo Essential is unconfirmed.** The RVG-Y1 runs
-  iRobot's newer "V4" firmware. Community reverse-engineering disagrees on
-  whether every firmware version opens the local port (8883) and reports
-  its position. Run `probe` to find out for your robot.
-  - If positions come through, everything works automatically.
-  - If not, you can still draw the map by hand and start, pause or dock
-    the robot from the app, but live coverage can't be tracked.
+- **What a real Combo Essential does.** One RVG-Y1 (SKU Y014020, firmware
+  `congo+1.1.22`) was tested with `probe` while cleaning:
+  - It accepts the local connection and reports its state: mission
+    phase, battery, bin and settings. So status, Start, Pause and Dock
+    work.
+  - It sends **no position**: no `pose` field, nothing that changes as it
+    drives, and no answer to any position-request variant.
+  - It echoes every message sent to it back to the sender. The mapper now
+    ignores those echoes.
+
+  With that firmware, automatic mapping isn't possible over the local
+  connection. Draw the map by hand. Newer firmware may differ, so run
+  `probe` again after updates.
 - **Expect some position drift.** The Combo Essential navigates by
   gyroscope and wheel odometry, so its position estimate drifts more than
   camera or LiDAR models. Aligning each run to the reference map corrects

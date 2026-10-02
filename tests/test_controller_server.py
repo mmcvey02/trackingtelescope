@@ -143,6 +143,14 @@ class ControllerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ctrl.command("selfdestruct")
 
+    def test_mode_params_not_sent_when_model_uses_app_settings(self):
+        ctrl, link, _ = self.make()
+        link.profile = dict(link.profile, mode_select=False)
+        ctrl2 = MapController(MapStore(self.path + "2"), link, clock=lambda: self.clock[0])
+        ctrl2.command("clean", "mop")
+        self.assertEqual(link.sent[-1], ("start", None))
+        self.assertFalse(ctrl2.robot["has_mop"])
+
     def test_pmap_change_warns(self):
         ctrl, link, robot = self.make()
         self.learn(ctrl, link)

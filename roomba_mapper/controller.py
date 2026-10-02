@@ -71,7 +71,9 @@ class MapController:
         self.robot = {"activity": "unknown", "battery": None, "bin_full": False, "error": 0,
                       "connected": False, "link": "Connecting...", "pose": None,
                       "pose_source": None, "name": getattr(link, "name", "robot"),
-                      "model": prof.get("name"), "has_mop": prof.get("mop", False)}
+                      "model": prof.get("name"),
+                      "has_mop": prof.get("mop", False) and prof.get("mode_select", True)}
+        self.mode_select = prof.get("mop", False) and prof.get("mode_select", True)
         self.run = None
         self._dirty = False
         self._last_save = 0.0
@@ -277,7 +279,7 @@ class MapController:
         params = None
         if verb == "clean":
             verb = "start"
-            if mode in ("vacuum", "mop"):
+            if mode in ("vacuum", "mop") and self.mode_select:
                 params = mop_params(mode, self.settings["mop_wetness"])
         try:
             self.link.command(verb, params)

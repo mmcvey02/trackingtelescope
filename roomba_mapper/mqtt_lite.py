@@ -249,8 +249,9 @@ class MiniBroker:
     """
 
     def __init__(self, host="127.0.0.1", port=0, username=None, password=None,
-                 ssl_context=None, max_clients=1):
+                 ssl_context=None, max_clients=1, echo=False):
         self.username, self.password = username, password
+        self.echo = echo  # real Roombas send every publish back to subscribers, sender included
         self.ssl_context = ssl_context
         self.max_clients = max_clients
         self.on_publish = None
@@ -303,6 +304,8 @@ class MiniBroker:
                     topic, payload, qos, pid = parse_publish(flags, body)
                     if qos == 1:
                         conn.sendall(packet(PUBACK, 0, struct.pack(">H", pid)))
+                    if self.echo:
+                        self.send(topic, payload)
                     if self.on_publish:
                         self.on_publish(topic, payload)
                 elif ptype == PINGREQ:

@@ -46,14 +46,15 @@ PROFILES = [
     ("Y01", {
         "key": "combo-essential",
         "name": "Roomba Combo Essential (RVG-Y1)",
-        "mop": True, "body_radius": 0.17, "clean_radius": 0.17, "protocol": "v4",
-        "notes": "V4 firmware. Local MQTT support varies by firmware; run `probe` to check. "
-                 "Navigation is gyroscope-based, so poses drift more than on camera/LiDAR models.",
+        "mop": True, "mode_select": False, "body_radius": 0.17, "clean_radius": 0.17, "protocol": "v4",
+        "notes": "V4 firmware. Firmware congo+1.1.22 accepts local connections and reports its state, "
+                 "but was not seen sharing its position locally; run `probe` to check yours. "
+                 "Cleaning mode and mop water level follow the iRobot app's settings.",
     }),
     ("Q01", {
         "key": "vac-essential",
         "name": "Roomba Vac Essential (RVG-Y1)",
-        "mop": False, "body_radius": 0.17, "clean_radius": 0.17, "protocol": "v4",
+        "mop": False, "mode_select": False, "body_radius": 0.17, "clean_radius": 0.17, "protocol": "v4",
         "notes": "Same platform as the Combo Essential without the mop.",
     }),
     ("X", {
@@ -400,6 +401,11 @@ def redact(obj):
     return obj
 
 
+def is_own_echo(msg):
+    """True for a copy of a request or command this program sent."""
+    return "reportType" not in msg and ("reqType" in msg or ("command" in msg and "initiator" in msg))
+
+
 def deep_merge(dst, src):
     for k, v in src.items():
         if isinstance(v, dict) and isinstance(dst.get(k), dict):
@@ -560,6 +566,8 @@ class WifiRoomba:
         if "reportType" in msg:
             self._on_rrtp(msg)
             return
+        if is_own_echo(msg):
+            return  # robots echo our own requests and commands back to us
         if isinstance(msg.get("state"), dict) and "reportType" in (msg["state"].get("reported") or {}):
             self._on_rrtp(msg["state"]["reported"])
             return
@@ -619,6 +627,7 @@ class WifiRoomba:
             "pose_from_state": self.shadow_pose_seen,
             "rrtp": self.rrtp_supported,
             "has_mop": self.profile.get("mop", False),
+            "mode_select": self.profile.get("mop", False) and self.profile.get("mode_select", True),
             "can_drive": False,
         }
 
@@ -637,7 +646,8 @@ def mop_params(mode, wetness=2):
     return None
 
 
-V4_SHADOWS = ("ro-currentstate", "ro-stats", "ro-configinfo", "ro-services", "rw-settings")
+V4_SHADOWS = ("ro-currentstate", "ro-stats", "ro-configinfo", "ro-services", "rw-settings",
+              "ro-sensor", "na-irbtfeatures", "rw-software", "rw-schedule", "rw-constatus")
 
 
 def suggest_pose_path(candidates):
@@ -703,18 +713,23 @@ def probe(ip, blid=None, password=None, port=MQTT_PORT, tls=True, listen=20.0, l
     topics = {}
     pending = {}            # reqId -> variant description
     answered = set()
+    echoes = [0]
     dump = open(dump_path, "w", encoding="utf-8") if dump_path else None
 
     def on_raw(topic, payload):
         topics[topic] = topics.get(topic, 0) + 1
         text = payload.decode("utf-8", "replace")
-        for req_id, variant in list(pending.items()):
-            if req_id in text:
-                answered.add(variant)
         try:
             msg = json.loads(text)
         except ValueError:
             msg = {"_raw": text[:2000]}
+        if isinstance(msg, dict) and is_own_echo(msg):
+            echoes[0] += 1
+            return  # our own request coming back is not an answer
+        if "reportType" in text:
+            for req_id, variant in list(pending.items()):
+                if req_id in text:
+                    answered.add(variant)
         if isinstance(msg, dict):
             body = (msg.get("state") or {}).get("reported") if isinstance(msg.get("state"), dict) else msg
             captured.append((topic, body if isinstance(body, dict) else msg))
@@ -757,6 +772,8 @@ def probe(ip, blid=None, password=None, port=MQTT_PORT, tls=True, listen=20.0, l
                   candidates=candidates, suggested_pose_path=suggestion)
     log(f"   state reports: {events['state']}, activity: {report['activity']}")
     log("   topics seen: " + (", ".join(f"{t} ({n})" for t, n in sorted(topics.items())) or "none"))
+    if echoes[0]:
+        log(f"   ({echoes[0]} of those were the robot echoing this program's own requests - ignored)")
     log(f"   position in state reports: {events['pose_state']}, RRTP positions: {events['pose_rrtp']}")
     if answered:
         log("   position requests answered for: " + "; ".join(sorted(answered)))

@@ -43,7 +43,8 @@ def self_signed_context(workdir=None):
 class RoombaEmulator:
     def __init__(self, host="127.0.0.1", port=0, blid="EMU0001", password="emulator",
                  sku="Y011040", pose_mode="rrtp", tls=True, time_scale=10.0, robot=None,
-                 discovery_port=None, tick=0.1, rrtp_topic="req", pose_field="cleanMissionStatus.pos"):
+                 discovery_port=None, tick=0.1, rrtp_topic="req", pose_field="cleanMissionStatus.pos",
+                 echo=True):
         """pose_mode: 'rrtp' (answer position requests on `rrtp_topic`), 'state'
         (pose in state reports, like a Roomba 980), 'field' (position under an
         unusual state field, `pose_field`, to exercise discovery of unknown
@@ -58,7 +59,7 @@ class RoombaEmulator:
         self.commands = []
         self.ssl_context = self_signed_context() if tls else None
         self.broker = MiniBroker(host, port, username=blid, password=password,
-                                 ssl_context=self.ssl_context)
+                                 ssl_context=self.ssl_context, echo=echo)
         self.broker.on_publish = self._on_publish
         self.port = self.broker.port
         self.host = host

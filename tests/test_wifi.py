@@ -74,6 +74,8 @@ class ParsingTests(unittest.TestCase):
 
     def test_profiles(self):
         self.assertEqual(wifi.profile_for(key="RVG-Y1")["key"], "combo-essential")
+        self.assertEqual(wifi.profile_for("Y014020")["key"], "combo-essential")  # a real unit's SKU
+        self.assertFalse(wifi.profile_for("Y014020")["mode_select"])
         self.assertTrue(wifi.profile_for("Y011040")["mop"])
         self.assertFalse(wifi.profile_for("Q012020")["mop"])
         self.assertEqual(wifi.profile_for("R980020")["key"], "900")
@@ -293,6 +295,32 @@ class EmulatorTests(unittest.TestCase):
             self.assertIn("--rrtp-topic", report["suggested_flags"])
             link = self.connect(emu, rrtp_topic=topic)
             self.assertTrue(wait_for(lambda: len(self.poses) >= 3))
+            link.close()
+        finally:
+            emu.close()
+
+    def test_echoing_robot_without_positions_like_combo_essential(self):
+        # Behaviour seen on a real RVG-Y1 (firmware congo+1.1.22): every publish is echoed
+        # back, state reports arrive, no pose field, position requests go unanswered.
+        emu = RoombaEmulator(pose_mode="none", time_scale=3, echo=True)
+        try:
+            emu.robot.command("start")
+            lines = []
+            report = wifi.probe("127.0.0.1", emu.blid, emu.password, port=emu.port, listen=4,
+                                log=lines.append)
+            self.assertEqual(report["rrtp_variants_answered"], [])
+            self.assertIsNone(report["suggested_pose_path"])
+            self.assertFalse(report["rrtp"])
+            self.assertTrue(any("echoing" in line for line in lines))
+            self.assertTrue(any("no position found while cleaning" in line for line in lines))
+
+            link = self.connect(emu)
+            link.command("pause")
+            link._request_rrtp()
+            time.sleep(0.5)
+            for key in ("reqId", "reqType", "command", "initiator"):
+                self.assertNotIn(key, link.reported)
+            self.assertEqual(self.poses, [])
             link.close()
         finally:
             emu.close()
