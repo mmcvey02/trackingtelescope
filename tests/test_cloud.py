@@ -50,8 +50,9 @@ class Resp(io.BytesIO):
 class FakeIRobot:
     """Answers like iRobot's discovery, login and REST services."""
 
-    def __init__(self, deny=()):
+    def __init__(self, deny=(), run_map_at=None):
         self.deny = deny
+        self.run_map_at = run_map_at
         self.requests = []
 
     def __call__(self, req, timeout=None):
@@ -88,10 +89,13 @@ class FakeIRobot:
             return js({"p2map_id": "M1", "active_p2mapv_id": "V1"})
         if path == "/v1/p2maps/M1/versions/V1":
             return js({"geojson_details": {"regions": [{"id": "1", "name": "Kitchen"}]}})
-        if path.endswith("/geojson"):
+        if path == "/v1/p2maps/M1/versions/V1/geojson":
             return js({"map_url": "https://download.example/bundle.tgz?sig=xyz"})
         if path == f"/v1/{BLID}/missionhistory":
-            return js([{"mission_id": "a", "durationM": 31, "sqft": 220, "map_id": "M1"}])
+            return js([{"missionId": "01ABC", "durationM": 31, "sqft": 220,
+                        "v4maps": ["RUNMAP1"], "v4maps_uploadfmt": "v4odm1map"}])
+        if path == "/v1/p2maps/RUNMAP1" and self.run_map_at == "p2map":
+            return js({"map_url": "https://download.example/run.tgz?sig=abc"})
         raise urllib.error.HTTPError(url, 404, "Not Found", {}, io.BytesIO(b"{}"))
 
 
@@ -154,6 +158,26 @@ class CloudProbeTests(unittest.TestCase):
         sent_pw = [r.full_url for r in fake.requests if r.data and b"pw" in r.data]
         self.assertEqual(len(sent_pw), 1)
         self.assertIn("accounts.login", sent_pw[0])
+
+    def test_per_run_map_search(self):
+        fake = FakeIRobot(deny=("/v1/p2maps",), run_map_at="p2map")
+        fake.deny = ("/v1/p2maps/livemap",)  # p2maps list allowed but empty below
+        lines = []
+        with tempfile.TemporaryDirectory() as d:
+            report = cloud.cloud_probe("me@example.com", "pw", out_dir=d, log=lines.append, opener=fake)
+            self.assertTrue(os.path.exists(os.path.join(d, "mission_map", "p2map_by_id_map_url.bin")))
+        tried = report["mission_map"]["tried"]
+        self.assertEqual(tried["p2map by id"], 200)
+        self.assertEqual(tried["mission by id"], 404)
+        self.assertEqual(tried["live map"], 403)
+        self.assertEqual(report["mission_map"]["map_id_format"], "v4odm1map")
+        self.assertIn("trajectories", report["features"])
+        self.assertTrue(any("paths/coverage" in line for line in lines))
+
+    def test_unknown_download_format_is_identified(self):
+        self.assertEqual(cloud.describe_bytes(b"\x1f\x8b\x08\x00"), "gzip")
+        self.assertEqual(cloud.describe_bytes(b"\x78\x9cabc"), "zlib")
+        self.assertEqual(cloud.describe_bytes(b"\x0a\x05hello"), "unknown binary (protobuf?)")
 
     def test_denied_requests_are_reported(self):
         fake = FakeIRobot(deny=("/v1/p2maps", "missionhistory", "pmaps", "/v1/robots"))

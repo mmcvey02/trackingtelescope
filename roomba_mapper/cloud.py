@@ -280,6 +280,104 @@ def summarize_geojson(doc):
     return summary
 
 
+# -- per-run maps (experimental) -------------------------------------------------------------
+
+def mission_map_candidates(blid, map_id, mission_id):
+    """Plausible addresses for a per-run map, modelled on iRobot's known map requests.
+
+    None of these is documented for "v4maps"; they are read-only guesses
+    at the user's own data. A wrong one just answers 403/404.
+    """
+    return [
+        ("p2map by id", f"/v1/p2maps/{map_id}", None),
+        ("p2map versions", f"/v1/p2maps/{map_id}/versions", None),
+        ("p2map geojson", f"/v1/p2maps/{map_id}/versions/{map_id}/geojson", {"response_type": "link"}),
+        ("p2map raw", f"/v1/p2maps/{map_id}/versions/{map_id}/raw", {"response_type": "link"}),
+        ("pmap by id", f"/v1/{blid}/pmaps/{map_id}", None),
+        ("pmap umf", f"/v1/{blid}/pmaps/{map_id}/versions/{map_id}/umf", {"activeDetails": "2"}),
+        ("v4map", f"/v1/{blid}/v4maps/{map_id}", None),
+        ("mission by id", f"/v1/{blid}/missionhistory/{mission_id}", None),
+        ("mission map", f"/v1/{blid}/missionhistory/{mission_id}/map", None),
+        ("robot timeline", f"/v1/robots/{blid}/timeline",
+         {"event_type": "HKC", "details_type_filter": "all", "app_version": "2.2.4", "limit": "10"}),
+        ("live map", "/v1/p2maps/livemap", {"robotId": blid}),
+    ]
+
+
+def _find_links(obj):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(v, str) and v.startswith("https://") and ("url" in k.lower() or "link" in k.lower()):
+                yield k, v
+            else:
+                yield from _find_links(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _find_links(v)
+
+
+def describe_bytes(data):
+    """Best guess at what a downloaded file is, from its first bytes."""
+    head = data[:4]
+    if head[:2] == b"\x1f\x8b":
+        return "gzip"
+    if head[:2] in (b"\x78\x9c", b"\x78\xda", b"\x78\x01"):
+        return "zlib"
+    if head == b"\x89PNG":
+        return "png image"
+    if head[:1] in (b"{", b"["):
+        return "json"
+    if data[257:262] == b"ustar":
+        return "tar"
+    return "unknown binary (protobuf?)"
+
+
+def hunt_mission_maps(cloud, blid, history, out_dir, report, log):
+    """Try the candidate addresses with the newest run that uploaded a map."""
+    run = next((r for r in history if r.get("v4maps") or r.get("v4maps_robot")), None)
+    if not run:
+        return
+    map_id = (run.get("v4maps") or run.get("v4maps_robot"))[0]
+    log(f"   runs upload their own map (format {run.get('v4maps_uploadfmt')!r}); "
+        f"trying to fetch the newest one ({run.get('sqft')} sq ft)...")
+    hunt_dir = os.path.join(out_dir, "mission_map")
+    os.makedirs(hunt_dir, exist_ok=True)
+    found = {}
+    for label, path, query in mission_map_candidates(blid, map_id, run.get("missionId")):
+        status, body = cloud.get(blid, path, query)
+        found[label] = status
+        if status >= 400:
+            log(f"     {label:16} HTTP {status}")
+            continue
+        log(f"     {label:16} HTTP {status}  {_describe(body)}")
+        safe = label.replace(" ", "_")
+        if isinstance(body, (bytes, bytearray)):
+            with open(os.path.join(hunt_dir, safe + ".bin"), "wb") as fh:
+                fh.write(body)
+            log(f"       saved {len(body)} bytes ({describe_bytes(body)})")
+            continue
+        _save(hunt_dir, safe + ".json", body)
+        for key, url in list(_find_links(body))[:3]:
+            try:
+                data = cloud.download(url)
+            except CloudError as exc:
+                log(f"       link {key}: {exc}")
+                continue
+            kind = describe_bytes(data)
+            with open(os.path.join(hunt_dir, f"{safe}_{key}.bin"), "wb") as fh:
+                fh.write(data)
+            log(f"       downloaded {key}: {len(data)} bytes ({kind})")
+            files = unpack_bundle(data) if kind in ("gzip", "tar", "json") else {}
+            for name, doc in files.items():
+                _save(hunt_dir, f"{safe}_{name}.json", doc)
+                summary = summarize_geojson(doc)
+                if summary:
+                    report["features"][name] = report["features"].get(name, 0) + summary["features"]
+                    log(f"         {name}: {summary['features']} features {summary['geometry']}"
+                        + (f" x {summary.get('x_range')} y {summary.get('y_range')}" if "x_range" in summary else ""))
+    report["mission_map"] = {"map_id_format": run.get("v4maps_uploadfmt"), "tried": found}
+
+
 # -- the probe -----------------------------------------------------------------------------
 
 
@@ -377,6 +475,9 @@ def cloud_probe(email, password, country="US", blid=None, out_dir="roomba_cloud"
     if hist is None:
         call("mission history (simple)", f"/v1/{blid}/missionhistory", None, "missionhistory_simple.json")
 
+    if isinstance(hist, list):
+        hunt_mission_maps(cloud, blid, hist, out_dir, report, log)
+
     log("4. Older map service (for comparison)")
     call("pmaps (classic)", f"/v1/{blid}/pmaps", {"visible": "true", "activeDetails": "2"}, "pmaps.json")
     call("robot record", "/v1/robots", {"robot_id": blid}, "robot.json")
@@ -385,6 +486,9 @@ def cloud_probe(email, password, country="US", blid=None, out_dir="roomba_cloud"
     log("")
     if has_paths:
         log("=> The cloud holds the robot's paths/coverage. The mapper can import these after each clean.")
+    elif any(st < 400 for st in (report.get("mission_map") or {}).get("tried", {}).values()):
+        log("=> Some per-run map requests were answered. Please share the mission_map folder so the "
+            "format can be decoded.")
     elif report["maps"]:
         log("=> Maps download, but without paths or coverage. Room outlines and the dock can still be imported.")
     elif any(s < 400 for s in report["endpoints"].values()):
