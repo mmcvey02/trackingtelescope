@@ -316,6 +316,16 @@ def _find_links(obj):
             yield from _find_links(v)
 
 
+def _is_empty(body):
+    if isinstance(body, (bytes, bytearray)):
+        return not body
+    if isinstance(body, list):
+        return not body
+    if isinstance(body, dict):
+        return all(_is_empty(v) if isinstance(v, (list, dict)) else v in (None, "") for v in body.values())
+    return False
+
+
 def describe_bytes(data):
     """Best guess at what a downloaded file is, from its first bytes."""
     head = data[:4]
@@ -345,7 +355,12 @@ def hunt_mission_maps(cloud, blid, history, out_dir, report, log):
     found = {}
     for label, path, query in mission_map_candidates(blid, map_id, run.get("missionId")):
         status, body = cloud.get(blid, path, query)
+        if status < 400 and _is_empty(body):
+            status = 204  # answered, but with nothing in it
         found[label] = status
+        if status == 204:
+            log(f"     {label:16} HTTP 200  (empty)")
+            continue
         if status >= 400:
             log(f"     {label:16} HTTP {status}")
             continue
@@ -486,13 +501,16 @@ def cloud_probe(email, password, country="US", blid=None, out_dir="roomba_cloud"
     log("")
     if has_paths:
         log("=> The cloud holds the robot's paths/coverage. The mapper can import these after each clean.")
-    elif any(st < 400 for st in (report.get("mission_map") or {}).get("tried", {}).values()):
+    elif any(st < 400 and st != 204 for st in (report.get("mission_map") or {}).get("tried", {}).values()):
         log("=> Some per-run map requests were answered. Please share the mission_map folder so the "
             "format can be decoded.")
     elif report["maps"]:
         log("=> Maps download, but without paths or coverage. Room outlines and the dock can still be imported.")
     elif any(s < 400 for s in report["endpoints"].values()):
         log("=> Logged in and some data is available, but no map was returned for this robot.")
+    elif report.get("mission_map"):
+        log("=> Your cleaning history is available, and each run uploads its own map, but none of the "
+            "known request types returns those maps. Their download address is only known to the iRobot app.")
     else:
         log("=> iRobot refused every request for this robot's data.")
     log(f"   Everything received was saved (passwords, tokens and links removed) in {os.path.abspath(out_dir)}")

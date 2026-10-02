@@ -94,6 +94,8 @@ class FakeIRobot:
         if path == f"/v1/{BLID}/missionhistory":
             return js([{"missionId": "01ABC", "durationM": 31, "sqft": 220,
                         "v4maps": ["RUNMAP1"], "v4maps_uploadfmt": "v4odm1map"}])
+        if path == f"/v1/robots/{BLID}/timeline":
+            return js({"events": []})
         if path == "/v1/p2maps/RUNMAP1" and self.run_map_at == "p2map":
             return js({"map_url": "https://download.example/run.tgz?sig=abc"})
         raise urllib.error.HTTPError(url, 404, "Not Found", {}, io.BytesIO(b"{}"))
@@ -173,6 +175,14 @@ class CloudProbeTests(unittest.TestCase):
         self.assertEqual(report["mission_map"]["map_id_format"], "v4odm1map")
         self.assertIn("trajectories", report["features"])
         self.assertTrue(any("paths/coverage" in line for line in lines))
+
+    def test_empty_answers_are_not_counted_as_maps(self):
+        fake = FakeIRobot()
+        lines = []
+        with tempfile.TemporaryDirectory() as d:
+            report = cloud.cloud_probe("me@example.com", "pw", out_dir=d, log=lines.append, opener=fake)
+        self.assertEqual(report["mission_map"]["tried"]["robot timeline"], 204)
+        self.assertFalse(any("Some per-run map requests were answered" in line for line in lines))
 
     def test_unknown_download_format_is_identified(self):
         self.assertEqual(cloud.describe_bytes(b"\x1f\x8b\x08\x00"), "gzip")
