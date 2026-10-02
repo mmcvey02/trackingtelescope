@@ -1,4 +1,6 @@
 __pycache__/
 *.pyc
 roomba_map.json
+roomba_map.json.v1.bak
+roomba_config.json
 .roomba-map-*.tmp

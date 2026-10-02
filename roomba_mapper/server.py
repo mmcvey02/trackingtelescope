@@ -6,7 +6,7 @@ import mimetypes
 import os
 import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 MAX_BODY = 1 << 20
@@ -19,44 +19,59 @@ class ApiError(Exception):
 
 
 def _int(value, name):
+    if isinstance(value, bool):
+        raise ApiError(400, f"'{name}' must be an integer")
     try:
         return int(value)
     except (TypeError, ValueError):
         raise ApiError(400, f"'{name}' must be an integer")
 
 
+def geojson(controller):
+    with controller.lock:
+        elements = [dict(el) for el in controller.map.elements]
+        locked = controller.map.locked
+    features = [{
+        "type": "Feature",
+        "properties": {"id": el["id"], "kind": el["kind"], "source": el["source"], "name": el["name"]},
+        "geometry": {"type": "Polygon", "coordinates": [el["points"] + [el["points"][0]]]},
+    } for el in elements]
+    return {"type": "FeatureCollection", "properties": {"units": "metres", "origin": "dock",
+                                                         "locked": locked},
+            "features": features}
+
+
 def make_handler(controller, pin=None):
+    def map_action(body):
+        action = body.get("action")
+        actions = {
+            "rebuild": controller.rebuild,
+            "lock": lambda: controller.set_locked(True),
+            "unlock": lambda: controller.set_locked(False),
+            "reset_coverage": controller.reset_coverage,
+            "erase": controller.erase_map,
+        }
+        if action not in actions:
+            raise ApiError(400, f"action must be one of {sorted(actions)}")
+        actions[action]()
+
     routes = {
-        "/api/mode": lambda b: controller.set_mode(b.get("mode")),
-        "/api/drive": lambda b: controller.drive(b.get("direction")),
-        "/api/goto": lambda b: controller.goto(_int(b.get("x"), "x"), _int(b.get("y"), "y")),
-        "/api/cells": lambda b: controller.set_cells(_cells(b.get("cells")), b.get("state")),
-        "/api/dock": lambda b: controller.set_dock(_int(b.get("x"), "x"), _int(b.get("y"), "y")),
-        "/api/robot": lambda b: controller.set_pose(
-            _int(b.get("x"), "x"), _int(b.get("y"), "y"), b.get("heading")),
-        "/api/reset": lambda b: controller.reset(b.get("scope")),
-        "/api/resize": lambda b: controller.resize(
-            _int(b.get("width"), "width"), _int(b.get("height"), "height")),
+        "/api/command": lambda b: controller.command(b.get("command"), b.get("mode")),
+        "/api/shapes": lambda b: controller.add_shape(b.get("kind"), b.get("points"), b.get("name")),
+        "/api/shapes/update": lambda b: controller.update_shape(
+            _int(b.get("id"), "id"), b.get("points"), b.get("kind"), b.get("name")),
+        "/api/shapes/delete": lambda b: controller.delete_shape(_int(b.get("id"), "id")),
+        "/api/map": map_action,
         "/api/settings": lambda b: controller.update_settings(b),
     }
 
-    def _cells(value):
-        if not isinstance(value, list) or len(value) > 40000:
-            raise ApiError(400, "'cells' must be a list of [x, y] pairs")
-        out = []
-        for item in value:
-            if not (isinstance(item, (list, tuple)) and len(item) == 2):
-                raise ApiError(400, "'cells' must be a list of [x, y] pairs")
-            out.append((_int(item[0], "x"), _int(item[1], "y")))
-        return out
-
     class Handler(BaseHTTPRequestHandler):
-        server_version = "RoombaMapper/1.0"
+        server_version = "RoombaMapper/2.0"
 
         def log_message(self, fmt, *args):  # keep the console quiet
             pass
 
-        def _send(self, status, body, content_type="application/json"):
+        def _send(self, status, body, content_type="application/json", extra=None):
             if isinstance(body, (dict, list)):
                 body = json.dumps(body).encode()
             self.send_response(status)
@@ -64,6 +79,8 @@ def make_handler(controller, pin=None):
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
             self.end_headers()
             self.wfile.write(body)
 
@@ -74,11 +91,18 @@ def make_handler(controller, pin=None):
             return hmac.compare_digest(given.encode(), pin.encode())
 
         def do_GET(self):
-            path = urlparse(self.path).path
+            url = urlparse(self.path)
+            path = url.path
+            if path.startswith("/api/") and path != "/api/info" and not self._authorised():
+                return self._send(401, {"error": "PIN required", "pin_required": True})
             if path == "/api/state":
-                if not self._authorised():
-                    return self._send(401, {"error": "PIN required", "pin_required": True})
-                return self._send(200, controller.snapshot())
+                q = parse_qs(url.query)
+                return self._send(200, controller.snapshot(
+                    have_map=(q.get("map") or [None])[0], have_cov=(q.get("cov") or [None])[0]))
+            if path == "/api/export":
+                return self._send(200, json.dumps(geojson(controller), indent=1).encode(),
+                                  "application/geo+json",
+                                  {"Content-Disposition": 'attachment; filename="roomba-map.geojson"'})
             if path == "/api/info":
                 return self._send(200, {"pin_required": bool(pin)})
             if path == "/":
@@ -110,12 +134,15 @@ def make_handler(controller, pin=None):
                     raise ApiError(400, "body must be JSON")
                 if not isinstance(body, dict):
                     raise ApiError(400, "body must be a JSON object")
-                routes[path](body)
+                result = routes[path](body)
             except ApiError as exc:
                 return self._send(exc.status, {"error": str(exc)})
-            except (ValueError, TypeError, IndexError) as exc:
+            except (ValueError, TypeError, KeyError, IndexError) as exc:
                 return self._send(400, {"error": str(exc)})
-            self._send(200, controller.snapshot())
+            state = controller.snapshot()
+            if isinstance(result, int) and not isinstance(result, bool):
+                state["created_id"] = result
+            self._send(200, state)
 
     return Handler
 

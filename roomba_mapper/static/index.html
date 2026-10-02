@@ -12,8 +12,14 @@
 </head>
 <body>
   <header>
-    <h1>Roomba Map</h1>
-    <span id="mode-pill" class="pill">…</span>
+    <div>
+      <h1>Roomba Map</h1>
+      <div id="robot-name" class="sub">…</div>
+    </div>
+    <div class="head-right">
+      <span id="battery" class="pill" hidden></span>
+      <span id="activity-pill" class="pill">…</span>
+    </div>
   </header>
 
   <main>
@@ -21,75 +27,118 @@
       <div class="progress"><div id="progress-bar"></div></div>
       <div class="stat-row">
         <div><b id="stat-percent">–</b><span>cleaned</span></div>
-        <div><b id="stat-remaining">–</b><span>cells to go</span></div>
-        <div><b id="stat-area">–</b><span>m² done</span></div>
-        <div><b id="stat-obstacles">–</b><span>obstacles</span></div>
+        <div><b id="stat-remaining">–</b><span>m² to go</span></div>
+        <div><b id="stat-floor">–</b><span>m² floor</span></div>
+        <div><b id="stat-runs">–</b><span>runs</span></div>
       </div>
-      <p id="status" class="status" role="status">Connecting…</p>
+      <p id="notice" class="status" role="status">Connecting…</p>
+      <p id="link" class="link-status"></p>
     </section>
 
-    <section class="controls" aria-label="Mode">
-      <button id="btn-auto" class="primary" data-mode="auto">▶ Auto clean</button>
-      <button id="btn-manual" data-mode="manual">✋ Manual</button>
-      <button id="btn-dock" data-mode="returning">⌂ Dock</button>
-      <button id="btn-stop" class="danger" data-mode="idle">■ Stop</button>
+    <section class="controls" aria-label="Robot">
+      <div class="clean-group">
+        <button id="btn-clean" class="primary">▶ Clean</button>
+        <select id="clean-mode" aria-label="Cleaning mode" hidden>
+          <option value="">App setting</option>
+          <option value="mop">Vacuum + mop</option>
+          <option value="vacuum">Vacuum only</option>
+        </select>
+      </div>
+      <button id="btn-pause">❚❚ Pause</button>
+      <button id="btn-dock">⌂ Dock</button>
     </section>
 
     <section class="card map-card">
-      <div id="map-wrap"><canvas id="map" aria-label="Cleaning map"></canvas></div>
+      <div class="map-head">
+        <span id="map-badge" class="badge">…</span>
+        <div class="map-tools">
+          <button id="btn-fit" title="Fit map" aria-label="Fit map">⤢</button>
+          <button id="btn-rotate" title="Rotate view 90°" aria-label="Rotate view">⟳</button>
+          <button id="btn-edit" class="toggle" aria-pressed="false">✎ Edit map</button>
+        </div>
+      </div>
+      <div id="map-wrap">
+        <canvas id="map" aria-label="Map of the home"></canvas>
+        <div id="draw-bar" class="draw-bar" hidden>
+          <span id="draw-hint"></span>
+          <div>
+            <button id="btn-undo-pt">Undo point</button>
+            <button id="btn-finish" class="primary">✓ Done</button>
+            <button id="btn-cancel">✕</button>
+          </div>
+        </div>
+      </div>
+      <div id="edit-panel" class="edit-panel" hidden>
+        <div class="seg" role="group" aria-label="Shape type">
+          <button data-kind="floor" class="active">Room / floor</button>
+          <button data-kind="obstacle">Obstacle</button>
+          <button data-kind="nogo">No-go</button>
+        </div>
+        <div class="seg" role="group" aria-label="Drawing tool">
+          <button data-tool="select" class="active">☝ Select</button>
+          <button data-tool="rect">▭ Rectangle</button>
+          <button data-tool="poly">⬠ Polygon</button>
+        </div>
+        <div id="selection" class="selection" hidden>
+          <span id="sel-label"></span>
+          <select id="sel-kind" aria-label="Change type">
+            <option value="floor">Room / floor</option>
+            <option value="obstacle">Obstacle</option>
+            <option value="nogo">No-go</option>
+          </select>
+          <button id="btn-del-point" hidden>Delete point</button>
+          <button id="btn-del-shape" class="danger">Delete shape</button>
+        </div>
+        <p class="hint">Select: tap a shape, drag its corners, drag the small mid-edge dots to add corners.
+          Rectangle: drag on the map. Polygon: tap each corner, then Done. Two fingers pan &amp; zoom.</p>
+      </div>
       <div class="legend">
-        <span><i class="sw unknown"></i>Unexplored</span>
-        <span><i class="sw dirty"></i>Needs cleaning</span>
+        <span><i class="sw needs"></i>Needs cleaning</span>
         <span><i class="sw clean"></i>Cleaned</span>
+        <span><i class="sw outside"></i>Driven, outside plan</span>
         <span><i class="sw obstacle"></i>Obstacle</span>
         <span><i class="sw nogo"></i>No-go</span>
+        <span><i class="sw trail"></i>Path</span>
       </div>
     </section>
 
-    <section class="card" aria-label="Tap tool">
-      <h2>Tap / drag on the map to…</h2>
-      <div class="tools" id="tools">
-        <button data-tool="goto" class="active">🎯 Go here</button>
-        <button data-tool="clean">✔ Mark cleaned</button>
-        <button data-tool="dirty">🧹 Needs cleaning</button>
-        <button data-tool="obstacle">▦ Obstacle</button>
-        <button data-tool="nogo">⛔ No-go</button>
-        <button data-tool="unknown">⌫ Erase</button>
-        <button data-tool="dock">⌂ Set dock</button>
-        <button data-tool="robot">🤖 Robot is here</button>
-      </div>
+    <section class="card" id="missed-card" hidden>
+      <h2>Spots that still need cleaning</h2>
+      <ol id="missed-list" class="missed"></ol>
     </section>
 
-    <section class="card dpad-card" aria-label="Manual drive">
-      <h2>Drive manually</h2>
-      <div class="dpad">
-        <button data-dir="N" aria-label="Up">▲</button>
-        <button data-dir="W" aria-label="Left">◀</button>
-        <button data-dir="E" aria-label="Right">▶</button>
-        <button data-dir="S" aria-label="Down">▼</button>
+    <section class="card">
+      <h2>Map</h2>
+      <p id="map-explain" class="hint"></p>
+      <div class="row">
+        <button id="btn-lock" class="primary">🔒 Lock as reference</button>
+        <button id="btn-rebuild">↻ Regenerate from runs</button>
       </div>
+      <div class="row">
+        <button id="btn-export">⬇ Export map</button>
+        <button id="btn-reset-cov">Clear cleaning history</button>
+      </div>
+      <div class="row single"><button id="btn-erase" class="danger">Erase map &amp; start over</button></div>
     </section>
 
     <details class="card">
-      <summary>Settings &amp; map</summary>
+      <summary>Settings</summary>
       <form id="settings-form">
-        <label>Re-clean a spot after (hours, 0 = never)
-          <input type="number" id="set-stale" min="0" step="0.5" inputmode="decimal"></label>
-        <label class="check"><input type="checkbox" id="set-manual-clean"> Vacuum while driving manually</label>
-        <button type="submit">Save settings</button>
+        <label>A cleaned spot needs cleaning again after (hours, 0 = never)
+          <input type="number" id="set-stale" min="0" step="1" inputmode="decimal"></label>
+        <label>Start cleaning automatically when this % of the floor needs it (0 = off)
+          <input type="number" id="set-auto-pct" min="0" max="100" step="5" inputmode="decimal"></label>
+        <label>…but not sooner than (hours after the last run)
+          <input type="number" id="set-auto-hours" min="0" step="1" inputmode="decimal"></label>
+        <label id="wet-row">Mop water level
+          <select id="set-wetness"><option value="1">Low</option><option value="2">Medium</option><option value="3">High</option></select></label>
+        <label class="check"><input type="checkbox" id="set-auto-lock"> Lock the map automatically once it stops growing</label>
+        <label class="check"><input type="checkbox" id="set-keep-learning"> Keep extending the explored area after locking</label>
+        <label class="check"><input type="checkbox" id="set-align"> Correct each run's drift against the reference map</label>
+        <label class="check"><input type="checkbox" id="set-mirror"> Mirror the map view</label>
+        <button type="submit" class="primary">Save settings</button>
       </form>
-      <form id="resize-form">
-        <div class="row">
-          <label>Width (cells)<input type="number" id="set-width" min="2" max="200"></label>
-          <label>Height (cells)<input type="number" id="set-height" min="2" max="200"></label>
-        </div>
-        <p class="hint" id="cell-size-hint"></p>
-        <button type="submit">Resize map</button>
-      </form>
-      <div class="row">
-        <button id="btn-new-pass">New cleaning pass</button>
-        <button id="btn-erase" class="danger">Erase whole map</button>
-      </div>
+      <dl id="robot-info" class="info"></dl>
     </details>
   </main>
 
