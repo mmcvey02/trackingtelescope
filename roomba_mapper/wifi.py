@@ -23,6 +23,7 @@ being worked out. ``probe()`` reports what your particular robot supports.
 
 import json
 import math
+import os
 import socket
 import ssl
 import threading
@@ -295,6 +296,110 @@ def pose_from_rrtp(msg):
     return None
 
 
+def resolve_path(data, path):
+    """Follow a dotted path ('a.b.0.c') through dicts and lists; None if absent."""
+    cur = data
+    for part in path.split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        elif isinstance(cur, list) and part.isdigit() and int(part) < len(cur):
+            cur = cur[int(part)]
+        else:
+            return None
+    return cur
+
+
+def pose_from_value(value, units="mm", angle="deg"):
+    """Interpret a position value in any of the shapes robots use.
+
+    Accepts {"point": {"x", "y"}, "theta"}, {"x", "y", "theta"/"t"/"heading"},
+    or [x, y] / [x, y, theta]. Returns (x_m, y_m, theta_rad) or None.
+    """
+    scale = {"mm": 0.001, "cm": 0.01, "m": 1.0}[units]
+    th = 0.0
+    try:
+        if isinstance(value, dict):
+            pt = value.get("point") if isinstance(value.get("point"), dict) else value
+            x, y = float(pt["x"]), float(pt["y"])
+            for key in ("theta", "t", "heading", "angle", "yaw"):
+                if key in value:
+                    th = float(value[key])
+                    break
+        elif isinstance(value, (list, tuple)) and len(value) in (2, 3):
+            x, y = float(value[0]), float(value[1])
+            th = float(value[2]) if len(value) == 3 else 0.0
+        else:
+            return None
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(math.isfinite(v) for v in (x, y, th)):
+        return None
+    return x * scale, y * scale, (math.radians(th) if angle == "deg" else th)
+
+
+POSITION_HINTS = ("pose", "pos", "point", "coord", "xyt", "loc", "theta", "heading", "x", "y")
+NOT_POSITION = ("batpct", "rssi", "snr", "noise", "time", "ts", "mssnm", "sqft", "expiretm",
+                "nmssn", "rechrgm", "mssnstrttm", "bbrun", "bbchg", "bbpwr", "bbsys", "bbmssn",
+                "tz", "utctime", "lastcommand", "version", "seq", "ver")
+
+
+def _leaves(obj, prefix=""):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield from _leaves(v, f"{prefix}.{k}" if prefix else str(k))
+    elif isinstance(obj, list) and len(obj) <= 16:
+        for i, v in enumerate(obj):
+            yield from _leaves(v, f"{prefix}.{i}" if prefix else str(i))
+    elif isinstance(obj, (int, float)) and not isinstance(obj, bool):
+        yield prefix, float(obj)
+
+
+def position_candidates(messages, limit=15):
+    """Find fields that look like a position in captured messages.
+
+    messages: list of (topic, payload_dict). A position changes often while
+    the robot drives and goes up *and* down (unlike counters and clocks), and
+    usually has a telling name. Returns [{"path", "topic", "changes", "sample",
+    "score"}] best first.
+    """
+    series = {}
+    for topic, payload in messages:
+        for path, val in _leaves(payload):
+            series.setdefault((topic, path), []).append(val)
+    out = []
+    for (topic, path), vals in series.items():
+        last = path.lower().split(".")[-1]
+        if last in NOT_POSITION or any(abs(v) > 1e8 for v in vals):
+            continue
+        changes = sum(1 for a, b in zip(vals, vals[1:]) if a != b)
+        if changes < 2:
+            continue
+        ups = sum(1 for a, b in zip(vals, vals[1:]) if b > a)
+        downs = sum(1 for a, b in zip(vals, vals[1:]) if b < a)
+        both_ways = min(ups, downs) > 0
+        named = any(h in part for part in path.lower().split(".") for h in POSITION_HINTS
+                    if len(h) > 1 or part == h)
+        score = changes * (3 if both_ways else 1) * (4 if named else 1)
+        out.append({"path": path, "topic": topic, "changes": changes,
+                    "sample": vals[-5:], "score": score})
+    out.sort(key=lambda c: -c["score"])
+    return out[:limit]
+
+
+SENSITIVE_KEYS = ("ssid", "bssid", "mac", "addr", "pass", "wlcfg", "netinfo", "gw", "dns",
+                  "mask", "cloudenv", "svccnct", "country", "sku")
+
+
+def redact(obj):
+    """Copy of a message with network details removed, safe to share."""
+    if isinstance(obj, dict):
+        return {k: ("<redacted>" if any(s in k.lower() for s in SENSITIVE_KEYS) else redact(v))
+                for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [redact(v) for v in obj]
+    return obj
+
+
 def deep_merge(dst, src):
     for k, v in src.items():
         if isinstance(v, dict) and isinstance(dst.get(k), dict):
@@ -316,7 +421,8 @@ class WifiRoomba:
     """
 
     def __init__(self, ip, blid, password, port=MQTT_PORT, tls=True, profile=None,
-                 pose_source="auto", pose_units="mm", rrtp_interval=1.0, ssl_context=None):
+                 pose_source="auto", pose_units="mm", rrtp_interval=1.0, ssl_context=None,
+                 pose_path=None, pose_angle="deg", rrtp_topic="req", rrtp_con_type="local"):
         self.ip, self.blid, self.password = ip, blid, password
         self.port, self.tls = port, tls
         self.profile = profile or profile_for()
@@ -329,6 +435,11 @@ class WifiRoomba:
         self.on_state = None
         self.on_pose = None
         self.on_link = None
+        self.on_raw = None           # callable(topic, payload_bytes), for diagnostics
+        self.pose_path = pose_path   # read the position from this field of the state reports
+        self.pose_angle = pose_angle
+        self.rrtp_topic = rrtp_topic
+        self.rrtp_con_type = rrtp_con_type
         self.rrtp_supported = None   # None = not yet known
         self.shadow_pose_seen = False
         self.last_pose = None
@@ -411,7 +522,7 @@ class WifiRoomba:
         if self._disconnected.is_set() and not self._stop.is_set():
             raise ConnectionError("connection to robot lost")
 
-    def _request_rrtp(self):
+    def _request_rrtp(self, topic=None, con_type=None):
         req_id = uuid.uuid4().hex[:12]
         now = time.time()
         with self._lock:
@@ -423,7 +534,10 @@ class WifiRoomba:
             if self._rrtp_misses >= 5 and not self.rrtp_supported:
                 self.rrtp_supported = False
             self._rrtp_pending[req_id] = now
-        self.publish("req", json.dumps({"reqId": req_id, "reqType": "current", "conType": "local"}))
+        self.publish(topic or self.rrtp_topic,
+                     json.dumps({"reqId": req_id, "reqType": "current",
+                                 "conType": con_type or self.rrtp_con_type}))
+        return req_id
 
     def publish(self, topic, payload):
         if self._client and self._client.connected:
@@ -432,6 +546,11 @@ class WifiRoomba:
     # -- incoming --
 
     def _on_message(self, topic, payload):
+        if self.on_raw:
+            try:
+                self.on_raw(topic, payload)
+            except Exception:
+                pass
         try:
             msg = json.loads(payload.decode("utf-8", "replace"))
         except ValueError:
@@ -441,6 +560,9 @@ class WifiRoomba:
         if "reportType" in msg:
             self._on_rrtp(msg)
             return
+        if isinstance(msg.get("state"), dict) and "reportType" in (msg["state"].get("reported") or {}):
+            self._on_rrtp(msg["state"]["reported"])
+            return
         reported = (msg.get("state") or {}).get("reported") if "state" in msg else msg
         if not isinstance(reported, dict):
             return
@@ -449,7 +571,13 @@ class WifiRoomba:
             snapshot = json.loads(json.dumps(self.reported))
         if self.on_state:
             self.on_state(snapshot)
-        if self.pose_source in ("auto", "shadow") and "pose" in reported:
+        if self.pose_path:
+            value = resolve_path(reported, self.pose_path)
+            pose = pose_from_value(value, self.pose_units, self.pose_angle) if value is not None else None
+            if pose:
+                self.shadow_pose_seen = True
+                self._emit_pose(*pose, "state:" + self.pose_path)
+        elif self.pose_source in ("auto", "state", "shadow") and "pose" in reported:
             pose = pose_from_reported(reported, self.pose_units)
             if pose:
                 self.shadow_pose_seen = True
@@ -509,8 +637,29 @@ def mop_params(mode, wetness=2):
     return None
 
 
-def probe(ip, blid=None, password=None, port=MQTT_PORT, tls=True, listen=20.0, log=print):
-    """Check what a robot supports. Prints findings and returns them as a dict."""
+V4_SHADOWS = ("ro-currentstate", "ro-stats", "ro-configinfo", "ro-services", "rw-settings")
+
+
+def suggest_pose_path(candidates):
+    """Turn the best candidate leaf (e.g. 'cleanMissionStatus.pos.point.x') into a --pose-path."""
+    for c in candidates:
+        parts = c["path"].split(".")
+        if parts[-1] in ("x", "y", "0", "1"):
+            parts = parts[:-1]
+            if parts and parts[-1] == "point":
+                parts = parts[:-1]
+            if parts:
+                return ".".join(parts)
+    return None
+
+
+def probe(ip, blid=None, password=None, port=MQTT_PORT, tls=True, listen=20.0, log=print,
+          dump_path=None):
+    """Check what a robot supports. Prints findings and returns them as a dict.
+
+    With dump_path, every message the robot sends is saved there (one JSON per
+    line, network details removed) so unknown position fields can be found.
+    """
     report = {"ip": ip}
     log(f"1. Discovery (UDP {DISCOVERY_PORT})")
     try:
@@ -541,39 +690,104 @@ def probe(ip, blid=None, password=None, port=MQTT_PORT, tls=True, listen=20.0, l
     if not (blid and password):
         log("   (give --blid and --password to test the connection itself)")
         return report
+
     link = WifiRoomba(ip, blid, password, port=port, tls=tls)
     events = {"state": 0, "pose_state": 0, "pose_rrtp": 0}
     link.on_state = lambda r: events.__setitem__("state", events["state"] + 1)
 
     def on_pose(x, y, th, src):
-        key = "pose_state" if src == "state" else "pose_rrtp"
-        events[key] += 1
+        events["pose_rrtp" if src == "rrtp" else "pose_state"] += 1
     link.on_pose = on_pose
+
+    captured = []           # (topic, dict)
+    topics = {}
+    pending = {}            # reqId -> variant description
+    answered = set()
+    dump = open(dump_path, "w", encoding="utf-8") if dump_path else None
+
+    def on_raw(topic, payload):
+        topics[topic] = topics.get(topic, 0) + 1
+        text = payload.decode("utf-8", "replace")
+        for req_id, variant in list(pending.items()):
+            if req_id in text:
+                answered.add(variant)
+        try:
+            msg = json.loads(text)
+        except ValueError:
+            msg = {"_raw": text[:2000]}
+        if isinstance(msg, dict):
+            body = (msg.get("state") or {}).get("reported") if isinstance(msg.get("state"), dict) else msg
+            captured.append((topic, body if isinstance(body, dict) else msg))
+        if dump:
+            dump.write(json.dumps({"t": round(time.time(), 2), "topic": topic, "msg": redact(msg)}) + "\n")
+    link.on_raw = on_raw
+
     log("3. Logging in")
     try:
         link._connect_once()
     except (OSError, MQTTError, ssl.SSLError) as exc:
         report["login"] = str(exc)
         log(f"   failed: {exc}")
+        if dump:
+            dump.close()
         return report
     report["login"] = "ok"
-    log(f"   ok. Listening {int(listen)} s for state and position (start a clean to see positions)...")
-    end = time.time() + listen
+    for name in V4_SHADOWS:  # ask newer firmware for its named state documents too
+        link.publish(f"$aws/things/{blid}/shadow/name/{name}/get", "")
+    variants = [("req", "local"), ("req", "remote"), (f"$aws/things/{blid}/req", "local")]
+    variant_flags = {f"topic={t} conType={c}": (t, c) for t, c in variants}
+    log(f"   ok. Listening {int(listen)} s. For a useful result the robot should be cleaning, "
+        "away from the dock, the whole time...")
+    end, k = time.time() + listen, 0
     while time.time() < end:
-        link._request_rrtp()
+        topic, con = variants[k % len(variants)]
+        req_id = link._request_rrtp(topic=topic, con_type=con)
+        pending[req_id] = f"topic={topic} conType={con}"
+        k += 1
         time.sleep(1.0)
+    time.sleep(1.5)  # late replies
     link.close()
-    report.update(events, rrtp=link.rrtp_supported, activity=activity_from(link.reported))
+    if dump:
+        dump.close()
+
+    candidates = position_candidates(captured)
+    suggestion = suggest_pose_path(candidates)
+    report.update(events, rrtp=link.rrtp_supported, activity=activity_from(link.reported),
+                  topics=topics, rrtp_variants_answered=sorted(answered),
+                  candidates=candidates, suggested_pose_path=suggestion)
     log(f"   state reports: {events['state']}, activity: {report['activity']}")
-    log(f"   position in state reports: {events['pose_state']}, RRTP positions: {events['pose_rrtp']} "
-        f"(RRTP {'answered' if link.rrtp_supported else 'no answer'})")
-    if events["pose_state"] or events["pose_rrtp"]:
+    log("   topics seen: " + (", ".join(f"{t} ({n})" for t, n in sorted(topics.items())) or "none"))
+    log(f"   position in state reports: {events['pose_state']}, RRTP positions: {events['pose_rrtp']}")
+    if answered:
+        log("   position requests answered for: " + "; ".join(sorted(answered)))
+    else:
+        log(f"   position requests (RRTP) unanswered in all {len(variants)} variants tried")
+    if candidates:
+        log("   fields that changed while listening (most position-like first):")
+        for c in candidates[:8]:
+            log(f"     {c['path']:45} {c['changes']:3} changes, latest {c['sample'][-3:]}  [{c['topic']}]")
+    else:
+        log("   no numeric field changed while listening")
+    if dump_path:
+        log(f"   every message was saved to {os.path.abspath(dump_path)} (network details removed)")
+
+    if events["pose_rrtp"] and "topic=req conType=local" not in answered:
+        topic, con = variant_flags[sorted(answered)[0]]
+        flags = (f" --rrtp-topic '{topic}'" if topic != "req" else "") + \
+                (f" --rrtp-contype {con}" if con != "local" else "")
+        report["suggested_flags"] = flags.strip()
+        log(f"   => automatic mapping will work. Start the mapper with:  serve{flags}")
+    elif events["pose_state"] or events["pose_rrtp"]:
         log("   => automatic mapping will work with this robot.")
+    elif suggestion:
+        log(f"   => possible position field found. Try:  serve --pose-path {suggestion}")
+        log("      (add --pose-units cm or m if the map comes out 10x too small/large, "
+            "--pose-angle rad if turns look wrong)")
     elif report["activity"] in ("docked", "idle", "unknown"):
         if link.rrtp_supported:
             log("   => the robot answers position requests (RRTP); it reports a position once it moves.")
         log("   The robot wasn't moving - start a clean, then probe again to confirm positions.")
     else:
-        log("   => no positions while cleaning: this robot does not share its position locally. "
-            "Draw the map by hand; live coverage tracking isn't possible.")
+        log("   => no position found while cleaning. Send the saved file (check it first) so the "
+            "format can be worked out; meanwhile draw the map by hand.")
     return report

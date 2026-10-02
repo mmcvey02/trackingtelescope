@@ -23,7 +23,7 @@ import time
 
 from .mqtt_lite import MiniBroker
 from .simulator import SimRoomba
-from .wifi import PASSWORD_REQUEST
+from .wifi import PASSWORD_REQUEST, deep_merge
 
 
 def self_signed_context(workdir=None):
@@ -43,11 +43,15 @@ def self_signed_context(workdir=None):
 class RoombaEmulator:
     def __init__(self, host="127.0.0.1", port=0, blid="EMU0001", password="emulator",
                  sku="Y011040", pose_mode="rrtp", tls=True, time_scale=10.0, robot=None,
-                 discovery_port=None, tick=0.1):
-        """pose_mode: 'rrtp' (answer position requests), 'state' (pose in state
-        reports, like a Roomba 980) or 'none' (no position at all)."""
+                 discovery_port=None, tick=0.1, rrtp_topic="req", pose_field="cleanMissionStatus.pos"):
+        """pose_mode: 'rrtp' (answer position requests on `rrtp_topic`), 'state'
+        (pose in state reports, like a Roomba 980), 'field' (position under an
+        unusual state field, `pose_field`, to exercise discovery of unknown
+        formats) or 'none' (no position at all)."""
         self.blid, self.password, self.sku = blid, password, sku
         self.pose_mode = pose_mode
+        self.rrtp_topic = rrtp_topic
+        self.pose_field = pose_field
         self.robot = robot or SimRoomba()
         self.time_scale = time_scale
         self.tick = tick
@@ -95,7 +99,7 @@ class RoombaEmulator:
             self.commands.append(msg)
             with self._lock:
                 self.robot.command(msg.get("command"), msg.get("params"))
-        elif topic == "req" and self.pose_mode == "rrtp":
+        elif topic == self.rrtp_topic and self.pose_mode == "rrtp":
             with self._lock:
                 moving = self.robot.phase not in ("charge",)
                 x, y, th = self.robot.reported_pose()
@@ -111,7 +115,7 @@ class RoombaEmulator:
         with self._lock:
             reported = self.robot.reported()
         if extra:
-            reported.update(extra)
+            deep_merge(reported, extra)
         self.broker.send(f"$aws/things/{self.blid}/shadow/update",
                          json.dumps({"state": {"reported": reported}}))
 
@@ -127,12 +131,22 @@ class RoombaEmulator:
                 last_version = version
                 self._publish_state()
             since_pose += self.tick
-            if self.pose_mode == "state" and moving and since_pose >= 1.0:
+            if self.pose_mode in ("state", "field") and moving and since_pose >= 1.0:
                 since_pose = 0.0
                 with self._lock:
                     x, y, th = self.robot.reported_pose()
-                self._publish_state({"pose": {"theta": int(round(math.degrees(th))),
-                                              "point": {"x": int(x * 1000), "y": int(y * 1000)}}})
+                pose = {"theta": int(round(math.degrees(th))),
+                        "point": {"x": int(x * 1000), "y": int(y * 1000)}}
+                if self.pose_mode == "state":
+                    self._publish_state({"pose": pose})
+                else:
+                    extra = {"signal": {"rssi": -45 - int(time.time() * 7) % 9}}
+                    node = extra
+                    parts = self.pose_field.split(".")
+                    for part in parts[:-1]:
+                        node = node.setdefault(part, {})
+                    node[parts[-1]] = pose
+                    self._publish_state(extra)
             self._stop.wait(self.tick / self.time_scale)
 
     # -- password handshake (separate listener, as on a real robot in "HOME held" mode) --

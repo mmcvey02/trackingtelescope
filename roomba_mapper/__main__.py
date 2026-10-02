@@ -56,7 +56,13 @@ def build_parser():
     s.add_argument("--no-tls", action="store_true", help="plain MQTT (emulator only)")
     s.add_argument("--pose-source", choices=("auto", "state", "rrtp"), default="auto")
     s.add_argument("--pose-units", choices=("mm", "cm", "m"), default="mm",
-                   help="units of 'pose' in state reports (older models)")
+                   help="units of positions in state reports")
+    s.add_argument("--pose-path", help="read the position from this state field, e.g. "
+                   "cleanMissionStatus.pos (see `probe`)")
+    s.add_argument("--pose-angle", choices=("deg", "rad"), default="deg",
+                   help="angle units of --pose-path positions")
+    s.add_argument("--rrtp-topic", default=None, help="topic for position requests (see `probe`)")
+    s.add_argument("--rrtp-contype", choices=("local", "remote"), default=None)
     s.add_argument("--sim-speed", type=float, default=15.0, help="simulator time multiplier")
     s.add_argument("--sim-seed", type=int, default=None)
 
@@ -82,7 +88,9 @@ def build_parser():
     pr.add_argument("--config", default=DEFAULT_CONFIG)
     pr.add_argument("--mqtt-port", type=int, default=8883)
     pr.add_argument("--no-tls", action="store_true")
-    pr.add_argument("--listen", type=float, default=20.0, help="seconds to watch for positions")
+    pr.add_argument("--listen", type=float, default=60.0, help="seconds to watch for positions")
+    pr.add_argument("--dump", default="roomba_probe.jsonl",
+                    help="save every message here (network details removed); '' to skip")
 
     e = sub.add_parser("emulate", help="pretend to be a Wi-Fi Roomba")
     e.add_argument("--host", default="127.0.0.1")
@@ -90,7 +98,8 @@ def build_parser():
     e.add_argument("--blid", default="EMU0001")
     e.add_argument("--password", default="emulator")
     e.add_argument("--sku", default="Y011040", help="Y011040 = Roomba Combo Essential (RVG-Y1)")
-    e.add_argument("--pose-mode", choices=("rrtp", "state", "none"), default="rrtp")
+    e.add_argument("--pose-mode", choices=("rrtp", "state", "field", "none"), default="rrtp")
+    e.add_argument("--rrtp-topic", default="req", help="topic the emulator answers position requests on")
     e.add_argument("--no-tls", action="store_true")
     e.add_argument("--speed", type=float, default=15.0)
     e.add_argument("--discovery-port", type=int, default=None,
@@ -120,7 +129,11 @@ def cmd_serve(args):
             sku = found[0]["sku"] if found else None
         profile = profile_for(key=args.model) if args.model else profile_for(sku)
         link = WifiRoomba(ip, blid, password, port=args.mqtt_port, tls=not args.no_tls,
-                          profile=profile, pose_source=args.pose_source, pose_units=args.pose_units)
+                          profile=profile, pose_source=args.pose_source, pose_units=args.pose_units,
+                          pose_path=args.pose_path or cfg.get("pose_path"),
+                          pose_angle=args.pose_angle,
+                          rrtp_topic=args.rrtp_topic or cfg.get("rrtp_topic") or "req",
+                          rrtp_con_type=args.rrtp_contype or cfg.get("rrtp_contype") or "local")
     else:
         from .simulator import SimLink, SimRoomba
         link = SimLink(SimRoomba(seed=args.sim_seed), time_scale=args.sim_speed,
@@ -209,7 +222,7 @@ def cmd_probe(args):
     if not ip:
         sys.exit("Give --ip (or run get-password first).")
     probe(ip, args.blid or cfg.get("blid"), args.password or cfg.get("password"),
-          port=args.mqtt_port, tls=not args.no_tls, listen=args.listen)
+          port=args.mqtt_port, tls=not args.no_tls, listen=args.listen, dump_path=args.dump or None)
     return 0
 
 
@@ -217,7 +230,7 @@ def cmd_emulate(args):
     from .emulator import RoombaEmulator
     emu = RoombaEmulator(args.host, args.port, args.blid, args.password, sku=args.sku,
                          pose_mode=args.pose_mode, tls=not args.no_tls, time_scale=args.speed,
-                         discovery_port=args.discovery_port)
+                         discovery_port=args.discovery_port, rrtp_topic=args.rrtp_topic)
     print(f"Emulated robot listening on {args.host}:{emu.port} (TLS {'off' if args.no_tls else 'on'}), "
           f"blid={args.blid} password={args.password} sku={args.sku} positions={args.pose_mode}")
     print(f"Connect with: python -m roomba_mapper serve --robot wifi --ip {args.host} "

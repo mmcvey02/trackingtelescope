@@ -1,5 +1,8 @@
 import io
 import json
+import math
+import os
+import tempfile
 import shutil
 import threading
 import time
@@ -106,6 +109,44 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(a("stop", "none"), "idle")
         self.assertEqual(a("stuck"), "stuck")
         self.assertEqual(wifi.activity_from({}), "unknown")
+
+    def test_pose_from_any_shape(self):
+        self.assertEqual(wifi.resolve_path({"a": {"b": [5, {"c": 7}]}}, "a.b.1.c"), 7)
+        self.assertIsNone(wifi.resolve_path({"a": 1}, "a.b"))
+        x, y, th = wifi.pose_from_value({"point": {"x": 1000, "y": 2000}, "theta": 180})
+        self.assertEqual((x, y), (1.0, 2.0))
+        self.assertAlmostEqual(th, math.pi)
+        x, y, th = wifi.pose_from_value({"x": 1.5, "y": -2, "t": 0.5}, units="m", angle="rad")
+        self.assertEqual((x, y, th), (1.5, -2.0, 0.5))
+        self.assertEqual(wifi.pose_from_value([10, 20], units="cm")[:2], (0.1, 0.2))
+        self.assertIsNone(wifi.pose_from_value("north"))
+        self.assertIsNone(wifi.pose_from_value({"x": float("nan"), "y": 0}))
+
+    def test_position_candidates_rank_position_first(self):
+        msgs = []
+        for k in range(30):
+            msgs.append(("$aws/things/X/shadow/update", {
+                "batPct": 100 - k // 3,
+                "cleanMissionStatus": {"mssnM": k // 10, "where": {"x": int(1000 * math.sin(k / 3)),
+                                                                   "y": int(800 * math.cos(k / 4))}},
+                "counter": k,
+                "signal": {"rssi": -40 - k % 5},
+            }))
+        cands = wifi.position_candidates(msgs)
+        self.assertEqual({c["path"] for c in cands[:2]},
+                         {"cleanMissionStatus.where.x", "cleanMissionStatus.where.y"})
+        self.assertFalse(any(c["path"] in ("batPct", "signal.rssi", "cleanMissionStatus.mssnM")
+                             for c in cands))
+        self.assertEqual(wifi.suggest_pose_path(cands), "cleanMissionStatus.where")
+
+    def test_redact(self):
+        out = wifi.redact({"netinfo": {"addr": 1}, "wlcfg": {"ssid": "home"}, "mac": "aa",
+                           "batPct": 50, "list": [{"bssid": "x"}]})
+        self.assertEqual(out["netinfo"], "<redacted>")
+        self.assertEqual(out["wlcfg"], "<redacted>")
+        self.assertEqual(out["mac"], "<redacted>")
+        self.assertEqual(out["batPct"], 50)
+        self.assertEqual(out["list"][0]["bssid"], "<redacted>")
 
     def test_mop_params(self):
         self.assertEqual(wifi.mop_params("vacuum"), {"operatingMode": 2})
@@ -217,6 +258,42 @@ class EmulatorTests(unittest.TestCase):
             self.assertEqual(report["login"], "ok")
             self.assertGreater(report["pose_rrtp"], 0)
             self.assertTrue(any("automatic mapping will work" in line for line in lines))
+        finally:
+            emu.close()
+
+    def test_probe_finds_unknown_position_field_and_mapper_uses_it(self):
+        emu = RoombaEmulator(pose_mode="field", time_scale=3, pose_field="cleanMissionStatus.loc")
+        try:
+            emu.robot.command("start")
+            with tempfile.TemporaryDirectory() as d:
+                dump = os.path.join(d, "dump.jsonl")
+                lines = []
+                report = wifi.probe("127.0.0.1", emu.blid, emu.password, port=emu.port, listen=5,
+                                    log=lines.append, dump_path=dump)
+                with open(dump) as fh:
+                    first = json.loads(fh.readline())
+                self.assertIn("topic", first)
+            self.assertEqual(report["suggested_pose_path"], "cleanMissionStatus.loc")
+            self.assertTrue(any("--pose-path cleanMissionStatus.loc" in line for line in lines))
+            link = self.connect(emu, pose_path="cleanMissionStatus.loc")
+            self.assertTrue(wait_for(lambda: len(self.poses) >= 3))
+            self.assertEqual(self.poses[-1][2], "state:cleanMissionStatus.loc")
+            link.close()
+        finally:
+            emu.close()
+
+    def test_probe_finds_position_requests_on_other_topic(self):
+        topic = "$aws/things/EMU0001/req"
+        emu = RoombaEmulator(pose_mode="rrtp", time_scale=3, rrtp_topic=topic)
+        try:
+            emu.robot.command("start")
+            report = wifi.probe("127.0.0.1", emu.blid, emu.password, port=emu.port, listen=4,
+                                log=lambda _l: None)
+            self.assertEqual(report["rrtp_variants_answered"], [f"topic={topic} conType=local"])
+            self.assertIn("--rrtp-topic", report["suggested_flags"])
+            link = self.connect(emu, rrtp_topic=topic)
+            self.assertTrue(wait_for(lambda: len(self.poses) >= 3))
+            link.close()
         finally:
             emu.close()
 

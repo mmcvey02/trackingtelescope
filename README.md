@@ -104,6 +104,31 @@ Requires Python 3.9 or newer. It uses no third-party packages.
    Then open the printed address on your phone. Start cleans from the app
    or from the iRobot app; either way the mapper follows along.
 
+### If `probe` finds no position
+
+Newer firmware does not always use the field names or request format the
+older models used. `probe` therefore listens for 60 seconds and reports:
+
+- every topic the robot sent on;
+- which variant of the position request (if any) it answered;
+- the fields that kept changing while the robot drove, ranked by how
+  position-like they look.
+
+It also saves every message to `roomba_probe.jsonl`, with Wi-Fi names and
+addresses removed. For a useful result, start a clean and wait until the
+robot has left the dock before running `probe`.
+
+What to do with the result:
+
+- **A position field is found.** `probe` prints a command such as
+  `serve --pose-path cleanMissionStatus.pos`. If the map comes out 10×
+  too small or large, add `--pose-units cm` or `--pose-units m`. If turns
+  look wrong, add `--pose-angle rad`.
+- **A different position request works.** `probe` prints the flags to
+  use, for example `--rrtp-topic ...` or `--rrtp-contype remote`.
+- **Nothing is found.** Look through `roomba_probe.jsonl` and share it so
+  the format can be worked out. Meanwhile you can draw the map by hand.
+
 ### Things to know about Wi-Fi Roombas
 
 - **The robot steers itself.** No Wi-Fi command drives a Roomba around, so
@@ -150,10 +175,10 @@ Roomba 980. `--pose-mode none` makes it report no position at all.
 
 | command | purpose |
 | --- | --- |
-| `serve` | run the mapper and phone app (`--robot sim/wifi`, `--pin`, `--map`, `--port`, `--model rvg-y1`, `--pose-source auto/state/rrtp`, `--pose-units mm/cm/m`) |
+| `serve` | run the mapper and phone app (`--robot sim/wifi`, `--pin`, `--map`, `--port`, `--model rvg-y1`, `--pose-source auto/state/rrtp`, `--pose-path`, `--pose-units mm/cm/m`, `--pose-angle deg/rad`, `--rrtp-topic`, `--rrtp-contype`) |
 | `discover` | list Wi-Fi Roombas on the network |
 | `get-password` | fetch and save the robot's local password (`--cloud` or `--ip`) |
-| `probe` | report what a robot supports |
+| `probe` | report what a robot supports, find unknown position fields (`--listen`, `--dump`) |
 | `emulate` | pretend to be a Wi-Fi Roomba |
 
 ## Code layout
