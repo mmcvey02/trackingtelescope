@@ -8,3 +8,4 @@ roomba_probe.jsonl
 roomba_cloud/
 roomba_cert.pem
 roomba_key.pem
+roomba_serial.jsonl

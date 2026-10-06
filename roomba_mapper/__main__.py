@@ -6,6 +6,8 @@ Commands:
   get-password  read the robot's local password (from the robot, or your iRobot account)
   probe         check what a robot supports (local connection, positions)
   cloud-probe   see what maps and cleaning history iRobot's servers hold for your robot
+  serial-probe  record and decode the serial line inside the robot (USB-serial adapter)
+  serial-send   send bytes on that serial line and show the replies
   emulate       pretend to be a Wi-Fi Roomba, for trying everything without one
 """
 
@@ -100,6 +102,28 @@ def build_parser():
     pr.add_argument("--listen", type=float, default=60.0, help="seconds to watch for positions")
     pr.add_argument("--dump", default="roomba_probe.jsonl",
                     help="save every message here (network details removed); '' to skip")
+
+    sp = sub.add_parser("serial-probe",
+                        help="record and decode the serial line inside the robot (USB-serial adapter)")
+    sp.add_argument("--port", help="serial device, e.g. /dev/ttyUSB0 or COM3 (default: the only one found)")
+    sp.add_argument("--port2", help="a second adapter, on the other direction of the same line")
+    sp.add_argument("--baud", default="auto", help="baud rate, or 'auto' to find it")
+    sp.add_argument("--seconds", type=float, default=120.0, help="how long to record; 0 = until Ctrl+C")
+    sp.add_argument("--gap-ms", type=float, default=20.0, help="silence (ms) that ends a message")
+    sp.add_argument("--out", default="roomba_serial.jsonl", help="file for the recording")
+    sp.add_argument("--quiet", action="store_true", help="don't print each message as it arrives")
+    sp.add_argument("--analyze", metavar="FILE", help="decode an earlier recording instead of recording")
+    sp.add_argument("--list", action="store_true", help="list serial ports and stop")
+
+    ss = sub.add_parser("serial-send", help="send bytes on the robot's serial line and show the replies")
+    ss.add_argument("frame", nargs="+", help="bytes in hex, e.g. 55 AA 00 06 00 05 ...")
+    ss.add_argument("--port", help="serial device (default: the only one found)")
+    ss.add_argument("--baud", type=int, default=115200)
+    ss.add_argument("--frame-format", help="fill in length and checksum, as printed by serial-probe "
+                    "(e.g. len@4:u16be+7,chk=sum8@0); then leave the checksum off the frame")
+    ss.add_argument("--repeat", type=int, default=1, help="send this many times")
+    ss.add_argument("--interval", type=float, default=1.0, help="seconds between repeats")
+    ss.add_argument("--listen", type=float, default=2.0, help="seconds to wait for replies")
 
     e = sub.add_parser("emulate", help="pretend to be a Wi-Fi Roomba")
     e.add_argument("--host", default="127.0.0.1")
@@ -265,6 +289,49 @@ def cmd_cloud_probe(args):
     return 0
 
 
+def _serial_port(args):
+    from .serial_probe import list_ports
+    if args.port:
+        return args.port
+    ports = list_ports()
+    if len(ports) == 1:
+        return ports[0]
+    sys.exit("Give the adapter with --port. Found: " + (", ".join(ports) if ports else
+             "no USB serial adapters (is it plugged in?)"))
+
+
+def cmd_serial_probe(args):
+    from .serial_probe import SerialError, analyze, capture, list_ports, load_capture
+    if args.list:
+        ports = list_ports()
+        print("\n".join(ports) if ports else "No USB serial adapters found.")
+        return 0
+    if args.analyze:
+        analyze(load_capture(args.analyze))
+        return 0
+    ports = [_serial_port(args)] + ([args.port2] if args.port2 else [])
+    try:
+        capture(ports, baud=args.baud, seconds=args.seconds, out_path=args.out,
+                gap_ms=args.gap_ms, live=not args.quiet)
+    except SerialError as exc:
+        print(f"Stopped: {exc}")
+        return 1
+    return 0
+
+
+def cmd_serial_send(args):
+    from .serial_probe import SerialError, parse_hex, send
+    print("Only send with the ESP32 off the line (its TX wire disconnected, or its EN pin held low): "
+          "two chips driving one wire can damage them.")
+    try:
+        send(_serial_port(args), args.baud, parse_hex(args.frame), frame_format=args.frame_format,
+             repeat=args.repeat, interval=args.interval, listen=args.listen)
+    except (SerialError, ValueError) as exc:
+        print(f"Stopped: {exc}")
+        return 1
+    return 0
+
+
 def cmd_emulate(args):
     from .emulator import RoombaEmulator
     emu = RoombaEmulator(args.host, args.port, args.blid, args.password, sku=args.sku,
@@ -290,7 +357,8 @@ def main(argv=None):
         argv = ["serve"] + argv
     args = parser.parse_args(argv)
     handlers = {"serve": cmd_serve, "discover": cmd_discover, "get-password": cmd_get_password,
-                "probe": cmd_probe, "cloud-probe": cmd_cloud_probe, "emulate": cmd_emulate}
+                "probe": cmd_probe, "cloud-probe": cmd_cloud_probe, "serial-probe": cmd_serial_probe,
+                "serial-send": cmd_serial_send, "emulate": cmd_emulate}
     return handlers[args.cmd](args) or 0
 
 

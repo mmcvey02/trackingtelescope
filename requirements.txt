@@ -1,3 +1,4 @@
 # No third-party packages are needed: the mapper, its MQTT client and the
 # phone app use only the Python standard library (3.9+).
 # `openssl` (command-line tool) is only used by the robot emulator and tests.
+# On Windows only, `serial-probe` and `serial-send` need pyserial (`pip install pyserial`).

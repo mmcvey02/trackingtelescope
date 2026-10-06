@@ -6,7 +6,8 @@ robot's reference: later runs are lined up with it and measured against it.
 You can draw or edit the map by hand from your phone.
 
 It talks to the robot over the robot's **built-in Wi-Fi radio**, so you
-don't need any add-on hardware or serial cable. It supports the
+don't need any add-on hardware or serial cable. (To look deeper, it can
+also record the serial line inside the robot: see `serial-probe`.) It supports the
 **Roomba Combo Essential (model RVG-Y1)** and other Wi-Fi Roombas. It also
 has a built-in simulator for trying everything without a robot.
 
@@ -229,6 +230,80 @@ project roombapy-prime, and iRobot may change or block them at any time.
 - **If you move the dock**, unlock the map and let it relearn, or move the
   shapes to match. The map's origin is the dock.
 
+## Listening to the serial line inside the robot (`serial-probe`)
+
+Inside the robot, the Wi-Fi module (an ESP32 on the Combo Essential)
+passes commands and status to the main controller over a serial line
+(UART). The Wi-Fi side only offers Clean, Pause and Dock, and no position.
+The serial line may carry much more, such as sensors, odometry or drive
+commands. `serial-probe` records that line through a USB-serial adapter and
+works out its message format. `serial-send` sends your own messages on it.
+
+This means opening the robot, which will probably void its warranty. No
+pinout is known for this robot, so you'll have to find the line yourself.
+
+### Wiring
+
+- Use a **3.3 V** USB-serial adapter (CP2102, CH340 or FT232 set to
+  3.3 V). A 5 V adapter can damage the ESP32.
+- Unplug the battery while you work inside the robot.
+- Find the serial line between the Wi-Fi module and the main board. Look
+  for a small connector or test pads marked TX/RX/GND near the ESP32.
+  When the robot is on, an idle serial line measures about 3.3 V.
+- Connect GND, and connect **only the adapter's RX** to the line. That
+  way you can only listen. A second adapter on the other wire records the
+  other direction (`--port2`).
+
+### Recording
+
+```bash
+python3 -m roomba_mapper serial-probe --list            # find the adapter
+python3 -m roomba_mapper serial-probe --port /dev/ttyUSB0 --port2 /dev/ttyUSB1
+```
+
+1. **Find the baud rate.** First, `serial-probe` listens at each common
+   speed and counts framing errors. Data read at the wrong speed comes in
+   garbled, with framing errors. Give `--baud 115200` to skip this step.
+2. **Record.** Every message is printed as it arrives and saved to
+   `roomba_serial.jsonl`. While it records, use the robot: start a clean,
+   pause, dock, or lift it. Each time, type a short note such as `clean`
+   and press Enter.
+3. **Read the report.** When the recording ends (after 120 s, or on
+   Ctrl+C), it shows:
+   - the frame format: start bytes, length field, and checksum (8- and
+     16-bit sums, XOR, common CRC-16s);
+   - the message types, how often each arrives, and which bytes change;
+   - for each of your notes, the messages that only appeared just after
+     it. These are the commands to try sending yourself.
+
+   Text lines, such as the ESP32's boot log, are reported as text. If the
+   line follows Tuya's serial protocol, used by many robot vacuums, the
+   report also lists its datapoints.
+
+`serial-probe --analyze roomba_serial.jsonl` decodes a saved recording
+again.
+
+### Sending
+
+**Take the ESP32 off the line first:** disconnect its TX wire, or hold
+its EN pin low. Otherwise two chips drive one wire, which can damage them.
+Then connect your adapter's TX where the ESP32's TX was.
+
+```bash
+# replay a captured message exactly
+python3 -m roomba_mapper serial-send --port /dev/ttyUSB0 --baud 115200 55 AA 00 06 00 05 01 01 00 01 01 0E
+# write a new one: leave off the checksum and let it fill in length and checksum
+python3 -m roomba_mapper serial-send --port /dev/ttyUSB0 --baud 115200 \
+    --frame-format len@4:u16be+7,chk=sum8@0 55 AA 00 06 00 05 01 01 00 01 00
+```
+
+The report prints the `--frame-format` value it found. `serial-send`
+prints any replies for 2 seconds (`--listen`). Use `--repeat` and
+`--interval` to send a message several times.
+
+Ports are opened with the standard library on Linux and macOS. On Windows,
+install pyserial (`pip install pyserial`).
+
 ## Trying the full Wi-Fi path without a robot
 
 The emulator speaks the same protocol as a real robot:
@@ -257,6 +332,8 @@ Roomba 980. `--pose-mode none` makes it report no position at all.
 | `get-password` | fetch and save the robot's local password (`--cloud` or `--ip`) |
 | `probe` | report what a robot supports, find unknown position fields (`--listen`, `--dump`) |
 | `cloud-probe` | download the maps and cleaning history iRobot holds for your robot (`--email`, `--country`, `--out`) |
+| `serial-probe` | record and decode the serial line inside the robot (`--port`, `--port2`, `--baud`, `--seconds`, `--analyze`, `--list`) |
+| `serial-send` | send bytes on that line and show the replies (`--port`, `--baud`, `--frame-format`, `--repeat`, `--listen`) |
 | `emulate` | pretend to be a Wi-Fi Roomba |
 
 ## Code layout
@@ -264,6 +341,7 @@ Roomba 980. `--pose-mode none` makes it report no position at all.
 | file | role |
 | --- | --- |
 | `roomba_mapper/wifi.py` | discovery, password retrieval, live robot link (state, positions via state pose or RRTP, commands), model profiles including the RVG-Y1 |
+| `roomba_mapper/serial_probe.py` | USB-serial capture, baud detection, frame-format detection (length, checksum, message types), sending |
 | `roomba_mapper/mqtt_lite.py` | small MQTT 3.1.1 client and test broker (standard library only) |
 | `roomba_mapper/geometry.py` | contour tracing, simplification, squaring of walls, run alignment |
 | `roomba_mapper/geomap.py` | the map: shapes, explored area, coverage, generation, persistence |
