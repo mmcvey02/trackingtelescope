@@ -36,7 +36,8 @@ from collections import Counter, defaultdict
 
 BAUDS = (115200, 9600, 19200, 38400, 57600, 230400, 460800, 921600)
 DEFAULT_GAP_MS = 20.0    # USB adapters deliver data in bursts up to ~16 ms apart
-MARK_WINDOW = 3.0        # seconds after a mark in which new messages count as its effect
+MARK_WINDOW = 3.0        # seconds after a note in which new messages count as its effect
+MARK_BEFORE = 10.0       # ...and before it, since notes are often typed after pressing the button
 MAX_MESSAGE = 4096
 MAX_FRAME = 1024
 SAMPLE = 400             # frames used for format detection
@@ -818,7 +819,7 @@ def tuya_datapoints(frames_by_dir):
 def _at(marks, t):
     """The mark whose window contains time t, or None."""
     for tm, label in marks:
-        if 0 <= t - tm <= MARK_WINDOW:
+        if -MARK_BEFORE <= t - tm <= MARK_WINDOW:
             return tm, label
     return None
 
@@ -855,7 +856,10 @@ CIREAL_NAMES = {
     (0x0200, 0xCC41): "stats: minutes on", (0x0200, 0xCC42): "stats: hours cleaning",
     (0x0200, 0xCC43): "stats: minutes cleaning", (0x0200, 0xCC44): "stats: square feet",
     (0xF100, 0x0021): "battery %", (0xF110, 0x0233): "bin present",
+    (0x4210, 0x0120): "mission command",
 }
+# values of the mission command, seen with the app's buttons
+CIREAL_COMMANDS = {1: "start", 3: "pause", 5: "dock"}
 
 
 def text_lines(msgs):
@@ -934,7 +938,10 @@ def cireal_text(m):
     parts = []
     for attr, size, data in m["attrs"]:
         name = CIREAL_NAMES.get((m["obj"], attr), "")
-        parts.append(f"0x{attr:04X}{f' {name}' if name else ''}{f' = {_value(data)}' if data else ''}")
+        value = _value(data)
+        if (m["obj"], attr) == (0x4210, 0x0120) and len(data) == 1 and data[0] in CIREAL_COMMANDS:
+            value += f" {CIREAL_COMMANDS[data[0]]}"
+        parts.append(f"0x{attr:04X}{f' {name}' if name else ''}{f' = {value}' if data else ''}")
     return f"{m['dir']:8} {op:9} object 0x{m['obj']:04X}: " + "; ".join(parts)
 
 
@@ -989,8 +996,10 @@ def analyze(rec, log=print):
                 line["cireal"] = exchanges
                 report_cireal(exchanges, log)
                 # match notes against the messages, not the log lines around them
-                units += [(m["t"], direction, cireal_text(m).encode(), (direction, m["op"], m["obj"], m["attrs"][0][0]
-                                                                      if m["attrs"] else None))
+                # a set from the ESP32 is an action (it may repeat); gets and replies are routine
+                units += [(m["t"], direction, cireal_text(m).encode(),
+                           None if m["op"] == 0x02 else
+                           (direction, m["op"], m["obj"], m["attrs"][0][0] if m["attrs"] else None))
                           for m in exchanges]
                 continue
             for t, text in lines:
@@ -1076,7 +1085,7 @@ def analyze(rec, log=print):
                 notes.append("changing bytes " + ",".join(map(str, ty["varying"][:10])) +
                              ("..." if len(ty["varying"]) > 10 else ""))
             if ty["only_near_marks"]:
-                notes.append("only after your notes")
+                notes.append("only around your notes")
             log(f"       {label:<28} {ty['count']:5}x  {ty['per_s']:6.2f}/s  "
                 f"{lo if lo == hi else f'{lo}-{hi}'} bytes  {'; '.join(notes)}")
             log(f"         e.g. {show(ty['example'], 32)}")
@@ -1098,27 +1107,28 @@ def analyze(rec, log=print):
                     f"values {info['values']}")
 
     if marks:
-        log(f"   After your notes (first {int(MARK_WINDOW)} s):")
+        log(f"   Around your notes ({int(MARK_BEFORE)} s before to {int(MARK_WINDOW)} s after; "
+            "actions, and messages seen only then):")
         seen_elsewhere = Counter()
         by_mark = defaultdict(list)
         for t, direction, data, kind in units:
             hit = _at(marks, t)
             if hit:
                 by_mark[hit].append((t, direction, data, kind))
-            else:
+            elif kind is not None:
                 seen_elsewhere[kind] += 1
         report["marks"] = {}
         for tm, label in marks:
             new, listed = [], set()
             for t, direction, data, kind in by_mark.get((tm, label), []):
-                if not seen_elsewhere[kind] and (direction, data) not in listed:
+                if (kind is None or not seen_elsewhere[kind]) and (direction, data) not in listed:
                     listed.add((direction, data))
                     new.append((t - tm, direction, data))
             new.sort(key=lambda item: item[0])
             report["marks"][label] = new
-            log(f"     '{label}': " + ("nothing new" if not new else f"{len(new)} messages seen only then"))
+            log(f"     '{label}': " + ("nothing new" if not new else f"{len(new)} messages"))
             for dt, direction, data in new[:8]:
-                log(f"       +{dt:4.1f}s  {direction}  {show(data, 80)}")
+                log(f"       {dt:+5.1f}s  {direction}  {show(data, 80)}")
     if not marks and report["lines"]:
         log("   Tip: record again and type a note each time you press a button in the app; the "
             "messages that follow are listed per note, ready to replay with serial-send.")
