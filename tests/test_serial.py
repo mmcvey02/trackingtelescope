@@ -263,6 +263,33 @@ class PortTests(unittest.TestCase):
         self.assertEqual(got, b"".join(frames))
         self.assertEqual(report["lines"]["A"]["spec"], "len@4:u16be+7,chk=sum8@0")
 
+    def test_ctrl_c_ends_cleanly(self):
+        import signal
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "cap.jsonl")
+            proc = subprocess.Popen([sys.executable, "-m", "roomba_mapper", "serial-probe", "--port", self.path,
+                                     "--baud", "115200", "--seconds", "0", "--out", out],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                                    cwd=os.path.join(os.path.dirname(__file__), ".."))
+            time.sleep(1.0)
+            os.write(self.master, b"hello\r\n")
+            time.sleep(0.5)
+            proc.send_signal(signal.SIGINT)
+            stdout, stderr = proc.communicate(timeout=10)
+            self.assertEqual(proc.returncode, 0, stderr.decode())
+            self.assertNotIn(b"Traceback", stderr)
+            self.assertIn(b"1 messages saved", stdout)
+            with open(out) as fh:
+                self.assertIn('"type": "stop"', fh.read())
+
+    def test_reading_a_closed_port_is_a_serial_error(self):
+        port = sp.SerialPort(self.path, 115200)
+        port.close()
+        with self.assertRaises(sp.SerialError):
+            port.read(0.01)
+
     def test_real_ff_bytes_survive(self):
         port = sp.SerialPort(self.path, 115200)
         try:

@@ -156,8 +156,13 @@ class SerialPort:
 
     def read(self, timeout):
         """Wait up to timeout seconds for data. Returns (bytes, framing errors or None)."""
+        if self._fd is None and self._ser is None:
+            raise SerialError(f"{self.path} is closed")
         if self._fd is not None:
-            ready, _, _ = select.select([self._fd], [], [], timeout)
+            try:
+                ready, _, _ = select.select([self._fd], [], [], timeout)
+            except (OSError, ValueError) as exc:
+                raise SerialError(f"{self.path} stopped working ({exc}); was it unplugged?") from exc
             if not ready:
                 return b"", 0
             try:
@@ -330,7 +335,8 @@ def capture(ports, baud="auto", seconds=120.0, out_path="roomba_serial.jsonl",
     ports is one device per direction (one or two). Returns the analysis.
     """
     names = "AB"
-    opened = []
+    opened, readers = [], []
+    stop = threading.Event()
     try:
         for path in ports:
             opened.append(SerialPort(path, 115200 if baud == "auto" else int(baud)))
@@ -362,14 +368,14 @@ def capture(ports, baud="auto", seconds=120.0, out_path="roomba_serial.jsonl",
             log("   Type a note and press Enter whenever you do something (e.g. 'clean', 'dock', "
                 "'bumped it') so it can be matched to the messages that follow.")
         events = queue.Queue()
-        stop = threading.Event()
 
         def reader(i, port):
             while not stop.is_set():
                 try:
                     data, errors = port.read(0.05)
                 except SerialError as exc:
-                    events.put(("error", time.time(), str(exc), 0))
+                    if not stop.is_set():
+                        events.put(("error", time.time(), str(exc), 0))
                     return
                 if data or errors:
                     events.put((names[i], time.time(), data, errors))
@@ -383,7 +389,8 @@ def capture(ports, baud="auto", seconds=120.0, out_path="roomba_serial.jsonl",
                 n += 1
                 events.put(("mark", time.time(), line.strip() or f"mark {n}", 0))
 
-        threads = [threading.Thread(target=reader, args=(i, p), daemon=True) for i, p in enumerate(opened)]
+        readers = [threading.Thread(target=reader, args=(i, p), daemon=True) for i, p in enumerate(opened)]
+        threads = list(readers)
         if marks_from_stdin and sys.stdin and sys.stdin.isatty():
             threads.append(threading.Thread(target=marker, daemon=True))
         t0 = time.time()
@@ -437,6 +444,9 @@ def capture(ports, baud="auto", seconds=120.0, out_path="roomba_serial.jsonl",
             out.write(json.dumps({"type": "stop", "t": round(time.time(), 4)}) + "\n")
         log(f"   {count} messages saved")
     finally:
+        stop.set()
+        for th in readers:   # let them finish reading before their ports close
+            th.join(1.0)
         for port in opened:
             port.close()
     log("3. What the recording shows")
