@@ -871,6 +871,15 @@ CIREAL_NAMES = {
     (0x0200, 0xCC43): "stats: minutes cleaning", (0x0200, 0xCC44): "stats: square feet",
     (0xF100, 0x0021): "battery %", (0xF110, 0x0233): "bin present",
     (0x4210, 0x0120): "mission command",
+    # read once after each run; same order and values as the mission report sent to iRobot
+    (0x0200, 0xCC10): "last run: result (6 = cancelled)", (0x0200, 0xCC11): "last run: flags",
+    (0x0200, 0xCC12): "last run: square feet", (0x0200, 0xCC13): "last run: minutes running",
+    (0x0200, 0xCC14): "last run: minutes charging", (0x0200, 0xCC15): "last run: minutes paused",
+    (0x0200, 0xCC16): "last run: minutes done", (0x0200, 0xCC17): "last run: dirt events",
+    (0x0200, 0xCC18): "last run: charges", (0x0200, 0xCC19): "last run: saves",
+    (0x0200, 0xCC1A): "last run: bin evacuations", (0x0200, 0xCC1B): "last run: pause id",
+    (0x0200, 0xCC1C): "last run: duration (min)", (0x0200, 0xCC1D): "last run: started docked",
+    (0x0200, 0xCC1E): "last run: eDock",
 }
 # values of the mission command, seen with the app's buttons
 CIREAL_COMMANDS = {1: "start", 3: "pause", 5: "dock"}
