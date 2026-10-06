@@ -434,6 +434,7 @@ def capture(ports, baud="auto", seconds=120.0, out_path="roomba_serial.jsonl",
                 if asm.buf:
                     emit(direction, asm.flush())
                     count += 1
+            out.write(json.dumps({"type": "stop", "t": round(time.time(), 4)}) + "\n")
         log(f"   {count} messages saved")
     finally:
         for port in opened:
@@ -443,7 +444,7 @@ def capture(ports, baud="auto", seconds=120.0, out_path="roomba_serial.jsonl",
 
 
 def load_capture(path):
-    rec = {"ports": {}, "baud": None, "messages": [], "marks": []}
+    rec = {"ports": {}, "baud": None, "messages": [], "marks": [], "start": None, "stop": None}
     with open(path, "r", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
@@ -453,6 +454,9 @@ def load_capture(path):
             if item.get("type") == "start":
                 rec["ports"] = item.get("ports", {})
                 rec["baud"] = item.get("baud")
+                rec["start"] = item.get("t")
+            elif item.get("type") == "stop":
+                rec["stop"] = item.get("t")
             elif "mark" in item:
                 rec["marks"].append((item["t"], item["mark"]))
             elif "hex" in item:
@@ -969,6 +973,11 @@ def analyze(rec, log=print):
     """Explain a recording (from load_capture). Prints findings and returns them."""
     ports, marks = rec["ports"], sorted(rec["marks"])
     report = {"baud": rec.get("baud"), "lines": {}}
+    if not rec["messages"]:
+        ends = [t for t in (rec.get("stop"), *(t for t, _ in marks)) if t]
+        heard = f" in {max(ends) - rec['start']:.0f} s" if rec.get("start") and ends else ""
+        log(f"   Nothing at all was received{heard}: not one byte, not even garbage. The wire never "
+            "changed: nothing was sent, or the adapter's RX/GND aren't touching the right points.")
     units = []                # (t, direction, bytes, kind) for matching against marks
     frames_by_dir = {}
     for direction in sorted({m[1] for m in rec["messages"]}):
