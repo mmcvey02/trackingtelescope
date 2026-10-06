@@ -25,6 +25,7 @@ import json
 import operator
 import os
 import queue
+import re
 import select
 import sys
 import threading
@@ -822,6 +823,141 @@ def _at(marks, t):
     return None
 
 
+# -- the ESP32's log of its messages to the main controller ----------------------------------
+#
+# The Combo Essential's Wi-Fi firmware prints every message it exchanges with the
+# main controller ("CiREAL" requests: an object, an operation and attributes).
+# These names were worked out from a log of firmware congo+1.1.22 / MCU 2.1.48,
+# by matching each value with what the firmware published to the cloud.
+
+ANSI = re.compile(r"\x1b\[[0-9;]*m|\[[0-9;]*m(?=[A-Z\[]|$)")
+CIREAL_OPS = {0x01: "get", 0x02: "set", 0x81: "get reply", 0x82: "set reply"}
+CIREAL_NAMES = {
+    (0x0010, 0x0011): "SKU", (0x0010, 0x0012): "BLID", (0x0010, 0x001F): "time (Unix seconds)",
+    (0x0010, 0x0046): "volume", (0x0010, 0x00F1): "suction level", (0x0010, 0x00F2): "water level",
+    (0x0010, 0x00F3): "mop pad plate", (0x0010, 0x00F4): "language schema version",
+    (0x0010, 0x00F5): "language slots", (0x0010, 0x00F6): "default language version",
+    (0x0010, 0x00F7): "default language", (0x0010, 0x00F8): "user language version",
+    (0x0010, 0x00F9): "user language pack", (0x0010, 0x00FA): "user language",
+    (0x0010, 0x00FB): "selected language",
+    (0x0110, 0x0008): "Wi-Fi firmware version", (0x0110, 0x0050): "Wi-Fi state",
+    (0x0110, 0x005C): "Wi-Fi signal (RSSI)", (0x0110, 0x005D): "Bluetooth MAC address",
+    (0x0200, 0x0008): "controller firmware version", (0x0200, 0x000A): "hardware revision",
+    (0x0200, 0x0010): "mission: expireM", (0x0200, 0x0011): "mission: rechrgM",
+    (0x0200, 0x0012): "mission: mssnM (minutes)", (0x0200, 0x0013): "mission: expireTm",
+    (0x0200, 0x0014): "mission: rechrgTm", (0x0200, 0x0015): "mission: mssnStrtTm",
+    (0x0200, 0x0016): "mission: operatingMode", (0x0200, 0x0017): "mission: nMssn (count)",
+    (0x0200, 0x0018): "mission: error", (0x0200, 0x0019): "mission: notReady",
+    (0x0200, 0x001A): "mission: cycle", (0x0200, 0x001B): "mission: phase",
+    (0x0200, 0x001C): "mission: missionId",
+    (0x0200, 0xCC30): "stats: missions", (0x0200, 0xCC31): "stats: missions completed",
+    (0x0200, 0xCC32): "stats: missions failed", (0x0200, 0xCC40): "stats: hours on",
+    (0x0200, 0xCC41): "stats: minutes on", (0x0200, 0xCC42): "stats: hours cleaning",
+    (0x0200, 0xCC43): "stats: minutes cleaning", (0x0200, 0xCC44): "stats: square feet",
+    (0xF100, 0x0021): "battery %", (0xF110, 0x0233): "bin present",
+}
+
+
+def text_lines(msgs):
+    """[(t, line)] from [(t, bytes)]: lines may run across messages, so join them first."""
+    lines, current, start = [], [], None
+    for t, data in msgs:
+        for ch in data.decode("latin-1"):
+            if ch in "\r\n":
+                text = ANSI.sub("", "".join(current)).strip()
+                if text:
+                    lines.append((start, text))
+                current, start = [], None
+            else:
+                if start is None:
+                    start = t
+                current.append(ch)
+    text = ANSI.sub("", "".join(current)).strip()
+    if text:
+        lines.append((start, text))
+    return lines
+
+
+def cireal_messages(lines):
+    """Messages from an ESP32 log's 'TxMessage'/'RxMessage' dumps.
+
+    lines is [(t, text)]. Returns [{"t", "dir", "req", "obj", "op", "attrs": [(attr, size, bytes)]}],
+    dir being "to MCU" (TxMessage) or "from MCU" (RxMessage). Messages the controller sends by itself
+    are logged differently and appear as their own lines (e.g. robot_mission.c ATT/value pairs).
+    """
+    out, cur, pending = [], None, None
+    for t, text in lines:
+        m = re.search(r"\b(TxMessage|RxMessage) :", text)
+        if m:
+            cur = {"t": t, "dir": "to MCU" if m.group(1) == "TxMessage" else "from MCU",
+                   "req": None, "obj": None, "op": None, "attrs": []}
+            out.append(cur)
+            pending = None
+            continue
+        if cur is None:
+            continue
+        m = re.search(r"(Request ID|Object ID|Type) : 0x([0-9A-Fa-f]+)", text)
+        if m:
+            cur[{"Request ID": "req", "Object ID": "obj", "Type": "op"}[m.group(1)]] = int(m.group(2), 16)
+            continue
+        m = re.search(r"\b0x([0-9A-Fa-f]{4}), Len/Res:(\d+),", text)
+        if m:
+            pending = (int(m.group(1), 16), int(m.group(2)))
+            cur["attrs"].append((pending[0], pending[1], b""))
+            continue
+        m = re.match(r"\[([0-9A-Fa-f ]*)\]", text)
+        if m and pending:
+            try:
+                data = bytes.fromhex(m.group(1))
+            except ValueError:
+                data = b""
+            cur["attrs"][-1] = (pending[0], pending[1], data)
+            pending = None
+            continue
+        if re.search(r"common_APIs\.c: (CiREAL|SUCCESS|TIMEOUT)", text):
+            cur = pending = None
+    return [m for m in out if m["obj"] is not None and m["op"] is not None]
+
+
+def _value(data):
+    if not data:
+        return ""
+    if len(data) > 2 and all(32 <= b < 127 for b in data):
+        return repr(data.decode())
+    if len(data) <= 4:
+        return f"{data.hex(' ').upper()} (= {int.from_bytes(data, 'big')})"
+    return data.hex(" ").upper()
+
+
+def cireal_text(m):
+    op = CIREAL_OPS.get(m["op"], f"op {m['op']:#04x}")
+    parts = []
+    for attr, size, data in m["attrs"]:
+        name = CIREAL_NAMES.get((m["obj"], attr), "")
+        parts.append(f"0x{attr:04X}{f' {name}' if name else ''}{f' = {_value(data)}' if data else ''}")
+    return f"{m['dir']:8} {op:9} object 0x{m['obj']:04X}: " + "; ".join(parts)
+
+
+def report_cireal(messages, log=print):
+    log(f"     It logs every message it exchanges with the main controller: {len(messages)} found.")
+    log("     Operations: get / set from the ESP32, 'get reply' / 'set reply' from the controller.")
+    table = {}
+    for m in messages:
+        for attr, size, data in m["attrs"]:
+            entry = table.setdefault((m["obj"], attr), {"ops": Counter(), "value": None, "size": size})
+            entry["ops"][CIREAL_OPS.get(m["op"], hex(m["op"]))] += 1
+            if data:
+                entry["value"] = data
+    log(f"     {'object':<6} {'attr':<6}  {'meaning':<28} {'seen':<24} last value")
+    for (obj, attr), e in sorted(table.items()):
+        seen = ", ".join(f"{op} x{n}" for op, n in e["ops"].items())
+        log(f"     0x{obj:04X} 0x{attr:04X}  {CIREAL_NAMES.get((obj, attr), '?'):<28} {seen:<24} "
+            f"{_value(e['value']) if e['value'] is not None else ''}"[:160])
+    unknown = sorted({(o, a) for o, a in table if (o, a) not in CIREAL_NAMES})
+    if unknown:
+        log("     '?' rows aren't named yet; notes typed while recording show which action uses them.")
+
+
 def analyze(rec, log=print):
     """Explain a recording (from load_capture). Prints findings and returns them."""
     ports, marks = rec["ports"], sorted(rec["marks"])
@@ -844,18 +980,24 @@ def analyze(rec, log=print):
         duration = max(1e-6, msgs[-1][0] - msgs[0][0])
         if _printable_share(b"".join(raw)) >= 0.9:
             line["text"] = True
-            lines = []
-            for t, data in msgs:
-                for text in data.decode("latin-1").replace("\r", "\n").split("\n"):
-                    if text.strip():
-                        lines.append((t, text.strip()))
-                        data = text.strip().encode("latin-1")
-                        units.append((t, direction, data, (direction, data)))
-            common = Counter(text for _, text in lines).most_common(8)
-            line["common_lines"] = common
+            lines = text_lines(msgs)
             log("     It's text: a log console, or a text protocol (AT-style commands).")
             if any("rst:" in text or "boot:" in text or "ets " in text for _, text in lines):
                 log("     It includes ESP32 boot messages: this is the ESP32's own console (its UART0).")
+            exchanges = cireal_messages(lines)
+            if exchanges:
+                line["cireal"] = exchanges
+                report_cireal(exchanges, log)
+                # match notes against the messages, not the log lines around them
+                units += [(m["t"], direction, cireal_text(m).encode(), (direction, m["op"], m["obj"], m["attrs"][0][0]
+                                                                      if m["attrs"] else None))
+                          for m in exchanges]
+                continue
+            for t, text in lines:
+                # log lines differ only by their timestamps: compare them without numbers
+                units.append((t, direction, text.encode("latin-1"), (direction, re.sub(r"\d+", "#", text))))
+            common = Counter(text for _, text in lines).most_common(8)
+            line["common_lines"] = common
             log("     most frequent lines:")
             for text, n in common:
                 log(f"       {n:5}x  {text[:100]}")

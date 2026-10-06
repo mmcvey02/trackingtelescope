@@ -184,6 +184,35 @@ class AnalysisTests(unittest.TestCase):
         self.assertIn("ESP32 boot messages", text)
         self.assertIn("I (900) mqtt: ping", text)
 
+    def test_esp32_message_log(self):
+        log = (b"I (3504) common_APIs.c: CiREAL Request for Request_ID: 0x00\r\n"
+               b"I (3504) common_APIs.c: TxMessage : \r\n"
+               b"I (3514) common_APIs.c: Message : 0x3fca3708 \r\n"
+               b"                            Version : 1:0 \r\n"
+               b"                         Request ID : 0x00 \r\n"
+               b"                          Object ID : 0x0200 \r\n"
+               b"                               Type : 0x01 \r\n"
+               b"                              Count : 1 \r\n\r\n"
+               b"I (3524) common_APIs.c:   0x0018, Len/Res:2, \r\n[] \r\n"
+               b"\x1b[0;32mI (3530) common_APIs.c: RxMessage : \x1b[0m\r\n"
+               b"                         Request ID : 0x00 \r\n"
+               b"                          Object ID : 0x0200 \r\n"
+               b"                               Type : 0x81 \r\n"
+               b"I (3534) common_APIs.c:   0x0018, Len/Res:2, \r\n[00 0E ] \r\n"
+               b"I (3544) common_APIs.c: SUCCESS!! CiREAL Response for Request_ID: 0x00 received\r\n")
+        # cut the log into USB-sized pieces, some in the middle of a line
+        msgs = [(1.0 + k / 100, log[i:i + 37], 0) for k, i in enumerate(range(0, len(log), 37))]
+        rec = {"ports": {"A": "COM3"}, "baud": 115200, "marks": [(0.99, "check")],
+               "messages": [(t, "A", d, e) for t, d, e in msgs]}
+        report, text = quiet(sp.analyze, rec)
+        found = report["lines"]["A"]["cireal"]
+        self.assertEqual([(m["dir"], m["obj"], m["op"]) for m in found],
+                         [("to MCU", 0x0200, 0x01), ("from MCU", 0x0200, 0x81)])
+        self.assertEqual(found[1]["attrs"], [(0x0018, 2, b"\x00\x0e")])
+        self.assertIn("mission: error", text)
+        self.assertIn("00 0E (= 14)", text)
+        self.assertIn("from MCU get reply object 0x0200: 0x0018 mission: error = 00 0E (= 14)", text)
+
     def test_random_noise_has_no_format(self):
         rnd = random.Random(5)
         msgs = [bytes(rnd.randrange(256) for _ in range(rnd.randint(3, 30))) for _ in range(30)]
