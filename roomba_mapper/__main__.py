@@ -304,8 +304,19 @@ def cmd_serial_probe(args):
     from .serial_probe import SerialError, analyze, capture, list_ports, load_capture
     if args.list:
         ports = list_ports()
-        print("\n".join(ports) if ports else "No USB serial adapters found.")
-        return 0
+        if ports:
+            print("\n".join(ports))
+            return 0
+        print("No USB serial adapters found.")
+        if os.name == "nt":
+            try:
+                import serial  # noqa: F401
+                print("Check Device Manager > Ports (COM & LPT) for the adapter and its COM number. "
+                      "If it isn't there, or has a warning sign, install its driver (CP210x VCP "
+                      "for a CP2102).")
+            except ImportError:
+                print("On Windows, serial ports need pyserial:  py -m pip install pyserial")
+        return 1
     if args.analyze:
         analyze(load_capture(args.analyze))
         return 0
