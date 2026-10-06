@@ -1118,7 +1118,7 @@ def analyze(rec, log=print):
             report["marks"][label] = new
             log(f"     '{label}': " + ("nothing new" if not new else f"{len(new)} messages seen only then"))
             for dt, direction, data in new[:8]:
-                log(f"       +{dt:4.1f}s  {direction}  {show(data, 32)}")
+                log(f"       +{dt:4.1f}s  {direction}  {show(data, 80)}")
     if not marks and report["lines"]:
         log("   Tip: record again and type a note each time you press a button in the app; the "
             "messages that follow are listed per note, ready to replay with serial-send.")
