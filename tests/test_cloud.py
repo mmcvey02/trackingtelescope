@@ -210,3 +210,15 @@ class CloudProbeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ErrorReasonTests(unittest.TestCase):
+    def test_reasons_are_short_and_anonymous(self):
+        from roomba_mapper.cloud import error_reason
+        self.assertEqual(error_reason({"message": "Missing Authentication Token"}),
+                         "'Missing Authentication Token'")
+        text = error_reason({"Message": "User: arn:aws:sts::123456789012:assumed-role/a/b is not authorized "
+                                        "on resource: arn:aws:execute-api:us-east-1:123456789012:x/GET/v1"})
+        self.assertIn("is not authorized", text)
+        self.assertNotIn("123456789012", text)
+        self.assertEqual(error_reason(b"<html>"), "")

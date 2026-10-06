@@ -21,6 +21,7 @@ import hmac
 import io
 import json
 import os
+import re
 import tarfile
 import urllib.error
 import urllib.parse
@@ -342,6 +343,23 @@ def describe_bytes(data):
     return "unknown binary (protobuf?)"
 
 
+def error_reason(body):
+    """The server's short explanation of a refusal, without account identifiers.
+
+    AWS answers "Missing Authentication Token" for an address that doesn't exist,
+    and "... is not authorized ..." for one that exists but isn't allowed.
+    """
+    if not isinstance(body, dict):
+        return ""
+    text = body.get("message") or body.get("Message") or body.get("error") or body.get("errorMessage") or ""
+    if not isinstance(text, str):
+        return ""
+    text = re.sub(r"arn:aws:\S+", "arn:...", text)
+    text = re.sub(r"\b\d{6,}\b", "...", text)
+    text = re.sub(r"[a-z]{2}-[a-z]+-\d:[0-9a-f-]{20,}", "...", text)
+    return repr(text[:120])
+
+
 def hunt_mission_maps(cloud, blid, history, out_dir, report, log):
     """Try the candidate addresses with the newest run that uploaded a map."""
     run = next((r for r in history if r.get("v4maps") or r.get("v4maps_robot")), None)
@@ -362,7 +380,8 @@ def hunt_mission_maps(cloud, blid, history, out_dir, report, log):
             log(f"     {label:16} HTTP 200  (empty)")
             continue
         if status >= 400:
-            log(f"     {label:16} HTTP {status}")
+            reason = error_reason(body)
+            log(f"     {label:16} HTTP {status}" + (f"  {reason}" if reason else ""))
             continue
         log(f"     {label:16} HTTP {status}  {_describe(body)}")
         safe = label.replace(" ", "_")
